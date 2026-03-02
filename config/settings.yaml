@@ -1,0 +1,28 @@
+provider: "${LLM_PROVIDER}"   # "deepseek"(默认) 或 "volcano"(火山方舟引擎)
+
+deepseek:
+  api_key: "${DEEPSEEK_API_KEY}"      # 从环境变量读取
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"               # 统一模型名 (DeepSeek-V3.2, 128K 上下文)
+  thinking: true                        # 开启思考模式 (三个角色均开启)
+  max_tokens: 16384
+
+volcano:
+  api_key: "${VOLCANO_API_KEY}"        # 火山方舟 API Key
+  base_url: "${VOLCANO_BASE_URL}"      # 默认 https://ark.cn-beijing.volces.com/api/v3
+  model: "${VOLCANO_MODEL}"            # 默认 deepseek-v3-2-251201
+  thinking: true
+  max_tokens: 16384
+  # ⚠️ DeepSeek V3.2 API 要点（参见 DeepSeekAPI使用指南.md）：
+  #   - deepseek-chat + extra_body={"thinking":{"type":"enabled"}} 等效于 deepseek-reasoner
+  #   - 思考模式下 temperature/top_p/presence_penalty/frequency_penalty 参数不生效
+  #   - 思考模式输出两个字段：reasoning_content（思维链）+ content（最终回答）
+  #   - 多轮对话中，上一轮的 reasoning_content 不拼入上下文，只传 content
+  #   - 工具调用场景：同一 turn 内子请求必须回传 reasoning_content；新 turn 必须清除
+
+tools:
+  e2b_api_key: "${E2B_API_KEY}"        # 代码沙箱
+  semantic_scholar_api_key: "${SEMANTIC_SCHOLAR_API_KEY}"  # 学术搜索 (Semantic Scholar API, 可选但推荐)
+
+agent:
+  max_turns: 5
