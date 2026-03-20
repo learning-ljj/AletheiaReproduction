@@ -16,8 +16,15 @@ _TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "run_python",
             "description": (
-                "Execute Python code and return stdout/stderr. "
-                "Use this to verify arithmetic, algebraic, or numerical steps."
+                "Execute Python code and return stdout/stderr. Use this to verify arithmetic, algebraic, or numerical steps. "
+                "Before writing code, verify API availability in standard library modules; do NOT call non-existent functions (e.g., `math.phi`). "
+                "If Euler's totient is needed, implement a local `phi(n)` helper in the snippet. "
+                "Requirements for checks involving fractions or rational expressions:\n"
+                "- For formulas containing fractions or rational expressions, do NOT perform comparisons by converting the theoretical expression into integer division using `//`.\n"
+                "- Prefer exact arithmetic using `fractions.Fraction` or compare by cross-multiplication to ensure precise equality checks.\n"
+                "- If rounding or floor operations are intentionally used (e.g., `//` or `math.floor`), explicitly state in the output that this is part of the problem definition and not an implementation approximation.\n"
+                "Code snippets must be self-contained and not rely on prior execution state; always print labeled final checked values for reproducibility. "
+                "For script-like checks, include a short PASS/FAIL summary line. Avoid OOM or exponential-time brute-force."
             ),
             "parameters": {
                 "type": "object",
@@ -39,6 +46,8 @@ _TOOL_SCHEMAS: list[dict] = [
                 "Search Wikipedia for a concept, theorem, or definition. "
                 "Use this FIRST for general mathematical concepts, named theorems, or "
                 "well-known results before trying search_arxiv. "
+                "Use precise queries (single theorem name or concept), not keyword soup. "
+                "If the first result is off-topic, reformulate once with a clearer term. "
                 "Returns the cleaned page content."
             ),
             "parameters": {
@@ -62,6 +71,8 @@ _TOOL_SCHEMAS: list[dict] = [
                 "Use this ONLY for specific academic paper citations or when "
                 "search_wikipedia does not provide sufficient information. "
                 "For general named theorems or well-known results, prefer search_wikipedia first. "
+                "Use concrete paper-oriented queries (title fragment / author / exact topic) rather than "
+                "broad keyword concatenation. "
                 "Returns a list of papers with arXiv ID, title, authors, published date, "
                 "and abstract snippet. If no results are found, flag the citation as a "
                 "potential hallucination."

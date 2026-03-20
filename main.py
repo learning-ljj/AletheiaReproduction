@@ -1,7 +1,9 @@
 """Aletheia CLI 入口：接受数学问题并运行 Generator→Verifier→Reviser 迭代精炼循环。"""
 
 import argparse
+import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +12,20 @@ load_dotenv()
 
 from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
+from src.core.state import RunStatus
+from src.utils.data_loader import lookup_ground_truth
+from src.utils.worklog_builder import WorklogBuilder
+
+
+def _configure_stdio_utf8() -> None:
+    """统一 stdout/stderr 为 UTF-8，避免 Windows 重定向日志乱码。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except ValueError:
+                continue
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,16 +52,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override max refinement turns (default: from settings.yaml).",
     )
     parser.add_argument(
-        "--log", "-l",
+        "--generate-worklog",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to generate markdown worklog after run (default: true).",
+    )
+    parser.add_argument(
+        "--worklog-path",
         type=str,
         default=None,
-        help="Path to save a human-readable log file.",
+        help="Optional output path for markdown worklog (default: data/logs/{problem_id}.md).",
     )
     return parser
 
 
+def _maybe_build_worklog(problem_id: str, worklog_path: str | None = None, llm_config: dict | None = None) -> str | None:
+    """若 raw 日志存在则生成 markdown 工作日志，返回输出路径。"""
+    run_jsonl_path = Path("data/logs") / f"{problem_id}.jsonl"
+    if not run_jsonl_path.exists():
+        return None
+
+    output_md = Path(worklog_path) if worklog_path else (Path("data/logs") / f"{problem_id}.md")
+    wb = WorklogBuilder(llm_config=llm_config)
+    wb.build_problem_worklog(str(run_jsonl_path), str(output_md))
+    return str(output_md)
+
+
 def main(argv: list[str] | None = None) -> int:
     """解析参数、加载配置、运行 Agent 并输出结果。返回 exit code。"""
+    _configure_stdio_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -73,37 +108,59 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("agent", {})["max_turns"] = args.max_turns
 
     # ── 初始化并运行 Agent ──
+    # 生成带时间戳的唯一运行 ID，避免多次运行的 JSONL 日志相互覆盖。
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{problem_id}_{run_ts}"
+
     agent = AletheiaAgent(config, prompts)
+    ground_truth, gt_source = lookup_ground_truth(problem_id)
     print(f">>> Problem ID: {problem_id}")
+    print(f">>> Run ID:     {run_id}")
     print(f">>> Max turns: {agent.max_turns}")
+    if ground_truth:
+        print(f">>> Ground truth loaded from: {gt_source}")
     print(f">>> Running Aletheia Agent...\n")
 
-    state = agent.solve(problem_id, problem_text)
+    state = None
+    solve_error: Exception | None = None
+    try:
+        state = agent.solve(run_id, problem_text, ground_truth=ground_truth)
+    except Exception as exc:  # noqa: BLE001
+        solve_error = exc
+        print(f"\n>>> Solve error: {exc}", file=sys.stderr)
 
     # ── 输出结果 ──
-    print("\n" + "=" * 70)
-    print(f">>> Iterations: {state.iteration_count}")
-    print(f">>> Final answer: {'Found' if state.final_answer else 'Not found (max turns exhausted)'}")
-    print("=" * 70)
+    if state is not None:
+        print("\n" + "=" * 70)
+        print(f">>> Iterations: {state.iteration_count}")
+        if state.status == RunStatus.SUCCESS:
+            print(">>> Result: SUCCESS — Complete solution found")
+        elif state.status == RunStatus.PARTIAL:
+            print(">>> Result: PARTIAL — Meaningful progress made (partial solution)")
+        elif state.status == RunStatus.FAILED:
+            reason = state.failure_reason or "unknown"
+            print(f">>> Result: FAILED ({reason})")
+        print("=" * 70)
 
-    if state.final_answer:
-        print("\n" + state.final_answer)
+        if state.final_output:
+            print("\n" + state.final_output)
 
-    # ── 可选：保存人类可读日志 ──
-    if args.log:
-        from src.utils.logger import write_readable_log
-        log_path = Path(args.log)
-        write_readable_log(
-            problem_id=problem_id,
-            problem_text=problem_text,
-            history=state.history,
-            final_answer=state.final_answer,
-            filepath=log_path,
-        )
-        print(f"\n>>> Log saved to: {log_path}")
+    # ── 可选：生成 markdown 工作日志（即使 solve 异常也尝试） ──
+    if args.generate_worklog:
+        try:
+            generated = _maybe_build_worklog(
+                problem_id=run_id,
+                worklog_path=args.worklog_path,
+                llm_config=config,
+            )
+            if generated:
+                print(f">>> Worklog markdown saved to: {generated}")
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).error("Worklog generation failed", exc_info=True)
+            print(f">>> Worklog generation failed: {exc}", file=sys.stderr)
 
-    print(f">>> JSONL logs saved to: data/logs/{problem_id}.jsonl")
-    return 0
+    print(f">>> JSONL logs saved to: data/logs/{run_id}.jsonl")
+    return 0 if solve_error is None else 1
 
 
 if __name__ == "__main__":

@@ -8,17 +8,8 @@ from typing import Callable
 import httpx
 from openai import OpenAI
 
-# 哨兵对象：区分「未传 stream_file（默认输出到 stderr）」和「主动传 None（禁用输出）」
+# 哨兵对象：区分「未传 stream_file（默认输出到 stdout）」和「主动传 None（禁用输出）」
 _UNSET = object()
-
-
-def _is_valid_json(s: str) -> bool:
-    """判断字符串是否是合法 JSON。"""
-    try:
-        json.loads(s)
-        return True
-    except (json.JSONDecodeError, ValueError):
-        return False
 
 
 @dataclass
@@ -39,26 +30,52 @@ class LLMClient:
         Args:
             config: 应包含 deepseek.api_key / deepseek.base_url / deepseek.model 等字段。
             stream_file: 流式 token 的实时输出目标。
-                - 不传（默认）：写入 sys.stderr。
+                - 不传（默认）：写入 sys.stdout。
                 - 传入文件对象（如 sys.stdout）：写入该文件。
                 - 传入 None：禁用实时输出。
         """
         ds = config["deepseek"]
+        connect_timeout = float(ds.get("connect_timeout_seconds", 30.0))
+        read_timeout = float(ds.get("read_timeout_seconds", 90.0))
+        write_timeout = float(ds.get("write_timeout_seconds", read_timeout))
+        pool_timeout = float(ds.get("pool_timeout_seconds", connect_timeout))
         self._client = OpenAI(
             api_key=ds["api_key"],
             base_url=ds["base_url"],
-            timeout=httpx.Timeout(1200.0, connect=30.0),  # 总超时 1200s，连接超时 30s
+            timeout=httpx.Timeout(
+                connect=connect_timeout,
+                read=read_timeout,
+                write=write_timeout,
+                pool=pool_timeout,
+            ),
         )
         self._model = ds.get("model", "deepseek-chat")
         self._thinking = ds.get("thinking", False)
         self._max_tokens = ds.get("max_tokens", 16384)
-        self._stream_file = sys.stderr if stream_file is _UNSET else stream_file
+        self._stream_max_retries = max(int(ds.get("stream_max_retries", 2)), 0)
+        self._stream_retry_backoff_seconds = max(float(ds.get("stream_retry_backoff_seconds", 2.0)), 0.0)
+        self._stream_file = sys.stdout if stream_file is _UNSET else stream_file
+
+    @staticmethod
+    def _raise_stream_failure(last_error: Exception | None) -> None:
+        """把底层网络异常映射为上层可分类的运行时错误。"""
+        if last_error is None:
+            raise RuntimeError("LLM stream failed without an underlying error")
+        if isinstance(last_error, httpx.TimeoutException):
+            raise TimeoutError("LLM stream timed out after retries") from last_error
+        if isinstance(last_error, (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError)):
+            raise ConnectionError("LLM stream failed after retries") from last_error
+        raise RuntimeError("LLM stream failed after retries") from last_error
 
     # ------------------------------------------------------------------
     # 流式读取内部辅助
     # ------------------------------------------------------------------
 
-    def _stream_completion(self, kwargs: dict) -> tuple[str, str, list[dict] | None]:
+    def _stream_completion(
+        self,
+        kwargs: dict,
+        stream_prefix: str | None = None,
+    ) -> tuple[str, str, list[dict] | None]:
         """流式请求并实时输出，返回 (reasoning_content, content, tool_calls)。
 
         内置重试逻辑：对网络连接中断（RemoteProtocolError/ReadError）最多重试 2 次。
@@ -66,38 +83,53 @@ class LLMClient:
         import time as _time
 
         last_error: Exception | None = None
-        _MAX_STREAM_RETRIES = 2
-        for _attempt in range(1 + _MAX_STREAM_RETRIES):
+        for _attempt in range(1 + self._stream_max_retries):
             if _attempt > 0:
-                wait = 2 ** _attempt  # 2s, 4s 指数退避
+                wait = self._stream_retry_backoff_seconds * (2 ** (_attempt - 1))
                 out = self._stream_file
                 if out:
-                    print(f"\n[RETRY {_attempt}/{_MAX_STREAM_RETRIES}] Network error: {last_error!r}. "
+                    print(f"\n[RETRY {_attempt}/{self._stream_max_retries}] Network error: {last_error!r}. "
                           f"Retrying in {wait}s...", file=out, flush=True)
                 else:
                     import logging as _logging
                     _logging.getLogger(__name__).warning(
-                        "LLM stream retry %d/%d after: %s", _attempt, _MAX_STREAM_RETRIES, last_error
+                        "LLM stream retry %d/%d after: %s", _attempt, self._stream_max_retries, last_error
                     )
                 _time.sleep(wait)
             try:
-                return self._do_stream_completion(kwargs)
+                return self._do_stream_completion(kwargs, stream_prefix=stream_prefix)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError,
-                    httpx.ReadTimeout) as e:
+                    httpx.TimeoutException) as e:
                 last_error = e
                 continue
             # 其他异常直接抛出（不重试）
-        raise last_error or RuntimeError("_stream_completion: exhausted retries")
+        self._raise_stream_failure(last_error)
 
-    def _do_stream_completion(self, kwargs: dict) -> tuple[str, str, list[dict] | None]:
+    def _do_stream_completion(
+        self,
+        kwargs: dict,
+        stream_prefix: str | None = None,
+    ) -> tuple[str, str, list[dict] | None]:
         """流式请求核心逻辑（不含重试）。"""
         kwargs["stream"] = True
-        stream = self._client.chat.completions.create(**kwargs)
+        try:
+            stream = self._client.chat.completions.create(**kwargs)
+        except KeyboardInterrupt as exc:
+            # 修复：建连阶段也可能抛 KeyboardInterrupt（Windows/代理链路抖动）。
+            # 统一转换为可重试异常，交给 _stream_completion 指数退避处理。
+            out = self._stream_file
+            if out:
+                print("\n[WARN] 建立流式连接中断，触发自动重试", file=out, flush=True)
+            raise httpx.ReadTimeout("LLM stream interrupted before first chunk") from exc
 
         content = ""
         reasoning_content = ""
         tool_calls_data: dict[int, dict] = {}
         out = self._stream_file
+
+        # 每次调用在流首加节点前缀，便于终端实时区分阶段来源。
+        if out and stream_prefix:
+            print(f"[{stream_prefix}] ", end="", flush=True, file=out)
 
         try:
             for chunk in stream:
@@ -128,17 +160,12 @@ class LLMClient:
                                 tool_calls_data[idx]["name"] += tc.function.name
                             if tc.function.arguments:
                                 tool_calls_data[idx]["arguments"] += tc.function.arguments
-        except KeyboardInterrupt:
-            # Windows 下 SSL 超时可能表现为 KeyboardInterrupt；返回已收集的部分内容
+        except KeyboardInterrupt as exc:
+            # Windows 下网络抖动有时会表现为 KeyboardInterrupt；
+            # 不返回截断内容，改为交给上层重试，避免 content 为空时误入下一阶段。
             if out:
-                print("\n[WARN] 流式读取被中断，返回已收集内容", file=out, flush=True)
-            # 清除不完整的工具调用（JSON 可能截断，无法安全执行）
-            incomplete_keys = [
-                k for k, d in tool_calls_data.items()
-                if not _is_valid_json(d.get("arguments", ""))
-            ]
-            for k in incomplete_keys:
-                del tool_calls_data[k]
+                print("\n[WARN] 流式读取中断，触发自动重试", file=out, flush=True)
+            raise httpx.ReadTimeout("LLM stream interrupted") from exc
 
         if out and (reasoning_content or content):
             print(file=out)
@@ -178,10 +205,12 @@ class LLMClient:
         self,
         messages: list[dict],
         thinking: bool | None = None,
+        stream_prefix: str | None = None,
     ) -> LLMResponse:
         """发送纯对话请求（流式），返回 LLMResponse。"""
         reasoning_content, content, _ = self._stream_completion(
-            self._build_kwargs(messages, thinking=thinking)
+            self._build_kwargs(messages, thinking=thinking),
+            stream_prefix=stream_prefix,
         )
         return LLMResponse(
             content=content or "",
@@ -198,6 +227,7 @@ class LLMClient:
         tools: list[dict],
         tool_executor: Callable[[str, dict], str],
         max_tool_rounds: int = 10,
+        stream_prefix: str | None = None,
     ) -> LLMResponse:
         """思考模式下的多轮工具调用对话（流式）。"""
         trace: list[dict] = []
@@ -207,7 +237,10 @@ class LLMClient:
         for _ in range(max_tool_rounds):
             kwargs = self._build_kwargs(messages, tools=tools)
 
-            reasoning_content, content, tool_calls = self._stream_completion(kwargs)
+            reasoning_content, content, tool_calls = self._stream_completion(
+                kwargs,
+                stream_prefix=stream_prefix,
+            )
             last_reasoning = reasoning_content or ""
 
             # 将 assistant 消息以 dict 追加（含 reasoning_content，DeepSeek 工具调用要求）
@@ -278,12 +311,55 @@ def create_llm_client(config: dict, stream_file=_UNSET) -> LLMClient:
 
     stream_file: 传递给 LLMClient 的流式输出目标（语义同 LLMClient.__init__）。
     """
-    provider = config.get("provider", "deepseek")
-    # 未解析的环境变量占位符视为默认值 "deepseek"
-    if not provider or provider.startswith("${"):
-        provider = "deepseek"
+    def _configured(value: str | None) -> bool:
+        return bool(value) and (not str(value).startswith("${"))
+
+    def _contains_placeholder(value: str | None) -> bool:
+        return isinstance(value, str) and "${" in value
+
+    def _resolve_provider_config(provider_name: str) -> dict:
+        shared_defaults = config.get("llm_defaults") or {}
+        provider_config = config.get(provider_name) or {}
+        return {**shared_defaults, **provider_config}
+
+    provider = config.get("provider")
+    # 若 provider 未配置或仍是占位符，则按可用密钥自动选择：volcano 优先，deepseek 备选
+    if not _configured(provider):
+        volcano_api_key = (config.get("volcano") or {}).get("api_key")
+        deepseek_api_key = (config.get("deepseek") or {}).get("api_key")
+        if _configured(volcano_api_key):
+            provider = "volcano"
+        elif _configured(deepseek_api_key):
+            provider = "deepseek"
+        else:
+            provider = "deepseek"
+    # 在返回客户端前做额外校验，给出更明确的报错（常见原因：.env 未加载、占位符未替换、base_url 格式错误）
     if provider == "volcano":
-        return LLMClient({"deepseek": config["volcano"]}, stream_file=stream_file)
+        volcano_cfg = _resolve_provider_config("volcano")
+        api_key = volcano_cfg.get("api_key")
+        base_url = volcano_cfg.get("base_url")
+        if not api_key or _contains_placeholder(api_key):
+            raise ValueError(
+                "Volcano provider selected but `volcano.api_key` is missing or contains placeholder. "
+                "Ensure .env contains VOLCANO_API_KEY and that you called load_dotenv() before loading config."
+            )
+        if base_url and not str(base_url).startswith("http"):
+            raise ValueError(
+                f"Volcano base_url looks invalid: {base_url!r}. It must start with 'http://' or 'https://'."
+            )
+        return LLMClient({"deepseek": volcano_cfg}, stream_file=stream_file)
     if provider == "deepseek":
-        return LLMClient(config, stream_file=stream_file)
+        deep_cfg = _resolve_provider_config("deepseek")
+        api_key = deep_cfg.get("api_key")
+        base_url = deep_cfg.get("base_url")
+        if not api_key or _contains_placeholder(api_key):
+            raise ValueError(
+                "DeepSeek provider selected but `deepseek.api_key` is missing or contains placeholder. "
+                "Ensure .env contains DEEPSEEK_API_KEY and that you called load_dotenv() before loading config."
+            )
+        if base_url and not str(base_url).startswith("http"):
+            raise ValueError(
+                f"DeepSeek base_url looks invalid: {base_url!r}. It must start with 'http://' or 'https://'."
+            )
+        return LLMClient({"deepseek": deep_cfg}, stream_file=stream_file)
     raise ValueError(f"Unknown LLM provider: {provider!r}. Use 'deepseek' or 'volcano'.")

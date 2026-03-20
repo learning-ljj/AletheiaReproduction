@@ -1,18 +1,24 @@
 provider: "${LLM_PROVIDER}"   # "deepseek"(默认) 或 "volcano"(火山方舟引擎)
 
+llm_defaults:
+  thinking: true
+  max_tokens: 16384
+  connect_timeout_seconds: 30
+  # Deepseek V3.2 在复杂 IMO 题上首包可能较慢，读写超时不宜过短。
+  read_timeout_seconds: 600
+  write_timeout_seconds: 600
+  pool_timeout_seconds: 30
+  stream_max_retries: 2
+
 deepseek:
   api_key: "${DEEPSEEK_API_KEY}"      # 从环境变量读取
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"               # 统一模型名 (DeepSeek-V3.2, 128K 上下文)
-  thinking: true                        # 开启思考模式 (三个角色均开启)
-  max_tokens: 16384
 
 volcano:
   api_key: "${VOLCANO_API_KEY}"        # 火山方舟 API Key
   base_url: "${VOLCANO_BASE_URL}"      # 默认 https://ark.cn-beijing.volces.com/api/v3
   model: "${VOLCANO_MODEL}"            # 默认 deepseek-v3-2-251201
-  thinking: true
-  max_tokens: 16384
   # ⚠️ DeepSeek V3.2 API 要点（参见 DeepSeekAPI使用指南.md）：
   #   - deepseek-chat + extra_body={"thinking":{"type":"enabled"}} 等效于 deepseek-reasoner
   #   - 思考模式下 temperature/top_p/presence_penalty/frequency_penalty 参数不生效
@@ -25,4 +31,5 @@ tools:
   semantic_scholar_api_key: "${SEMANTIC_SCHOLAR_API_KEY}"  # 学术搜索 (Semantic Scholar API, 可选但推荐)
 
 agent:
-  max_turns: 5
+  max_turns: 3
+  worklog_llm_timeout_seconds: 120

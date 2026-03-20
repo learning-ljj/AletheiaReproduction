@@ -56,6 +56,53 @@ load_dotenv()
 _W = 72
 
 
+def _build_run_id(problem_id: str) -> str:
+    """为单题运行构造唯一日志键，避免历史 JSONL 混写。"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"{problem_id}_{ts}"
+
+
+def _serialize_history(history) -> list[dict]:
+    """将 Agent history 序列化为 raw-only 结构。"""
+    output: list[dict] = []
+    for h in history:
+        node = getattr(h, "agent_node", "")
+        entry: dict = {
+            "turn_id": getattr(h, "turn_id", None),
+            "agent_node": node,
+            "decision": str(h.decision.value) if getattr(h, "decision", None) else None,
+            "tool_calls_count": len(getattr(h, "tool_calls_trace", []) or []),
+            "timestamp": getattr(h, "timestamp", None),
+        }
+
+        if node in ("GENERATOR", "REVISER"):
+            cot = getattr(h, "extracted_cot", "") or ""
+            content = getattr(h, "content", "") or ""
+            entry.update({
+                "reasoning_full": cot,
+                "content_full": content,
+            })
+        elif node == "VERIFIER":
+            phase1 = getattr(h, "phase1_analysis", "") or ""
+            verification_report = getattr(h, "verification_report", "") or ""
+            full_verification = getattr(h, "full_verification_text", "") or ""
+            tool_calls = getattr(h, "tool_calls_trace", []) or []
+            entry.update({
+                "phase1_full": phase1,
+                "tool_calls": tool_calls,
+                "phase3_full": full_verification,
+                "verification_report": verification_report,
+                "parse_error": getattr(h, "parse_error", None),
+            })
+        output.append(entry)
+    return output
+
+
+def _last_verifier_decision(history: list[dict]) -> str | None:
+    verifier = [x for x in history if x.get(“agent_node”) == “VERIFIER”]
+    return verifier[-1].get(“decision”) if verifier else None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Grader Agent：用于 gradingbench 的独立评分 LLM 调用
 # ════════════════════════════════════════════════════════════════════════════
@@ -149,30 +196,32 @@ def _human_to_3way(reward: str) -> str:
 def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
     """运行 AnswerBench，返回 (per-item results, summary)。"""
     from src.utils.evaluator import check_answer
+    from src.utils.parser import extract_xml_tag, normalize_short_answer
 
     results = []
     for item in data:
         pid = item["problem_id"]
+        run_id = _build_run_id(pid)
         t0 = time.time()
         try:
-            state = agent.solve(pid, item["problem"])
+            state = agent.solve(run_id, item["problem"], ground_truth=item.get("answer", ""))
             predicted = state.final_answer or state.current_proof
-            correct = check_answer(predicted, item["answer"])
+            # 如果 Generator/Verifier 使用了 XML 输出（<verdict>），优先从中提取短答并归一化
+            verdict_candidate = extract_xml_tag(predicted, "verdict")
+            if verdict_candidate:
+                predicted_for_check = normalize_short_answer(verdict_candidate)
+            else:
+                # 也对直接的预测文本做归一化，减少格式差异带来的不匹配
+                predicted_for_check = normalize_short_answer(predicted)
+
+            correct = check_answer(predicted_for_check, item["answer"])
             elapsed = time.time() - t0
-            # 采集 Agent 历史轮次信息（用于工作日志）
-            history_info = [
-                {
-                    "turn_id": h.turn_id,
-                    "agent_node": h.agent_node,
-                    "decision": str(h.decision.value) if h.decision else None,
-                    "tool_calls_count": len(h.tool_calls_trace) if h.tool_calls_trace else 0,
-                    "bug_report_snippet": (h.bug_report or "")[:300] if h.bug_report else None,
-                    "phase1_analysis": (h.phase1_analysis or "")[:500] if hasattr(h, "phase1_analysis") else None,
-                }
-                for h in state.history
-            ]
+            history_info = _serialize_history(state.history)
+            final_verifier_decision = _last_verifier_decision(history_info)
             entry = {
                 "problem_id": pid,
+                "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "subcategory": item.get("subcategory", ""),
                 "source": item.get("source", ""),
@@ -180,6 +229,12 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "iterations": state.iteration_count,
                 "time_s": round(elapsed, 1),
                 "ground_truth": item["answer"],
+                "predicted_raw": predicted,
+                "predicted_for_check": predicted_for_check,
+                "final_verifier_decision": final_verifier_decision,
+                "verifier_false_positive": final_verifier_decision == "CORRECT" and not correct,
+                "verifier_false_negative": final_verifier_decision in ("MINOR_FLAW", "CRITICAL_FLAW") and correct,
+                "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
             status = "✅" if correct else "❌"
@@ -189,6 +244,8 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
             elapsed = time.time() - t0
             entry = {
                 "problem_id": pid,
+                "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "subcategory": item.get("subcategory", ""),
                 "source": item.get("source", ""),
@@ -203,11 +260,17 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
 
     correct_count = sum(1 for r in results if r.get("correct"))
     total = len(results)
+    verifier_fp = sum(1 for r in results if r.get("verifier_false_positive"))
+    verifier_fn = sum(1 for r in results if r.get("verifier_false_negative"))
+    partial_count = sum(1 for r in results if r.get("run_status") == "PARTIAL_PROGRESS")
     summary = {
         "dataset": "answerbench",
         "total": total,
         "correct": correct_count,
         "exact_match_accuracy": round(correct_count / total, 4) if total else 0.0,
+        "partial_progress": partial_count,
+        "verifier_false_positive": verifier_fp,
+        "verifier_false_negative": verifier_fn,
         "error_count": sum(1 for r in results if "error" in r),
     }
     return results, summary
@@ -225,9 +288,10 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
     results = []
     for item in data:
         pid = item["problem_id"]
+        run_id = _build_run_id(pid)
         t0 = time.time()
         try:
-            state = agent.solve(pid, item["problem"])
+            state = agent.solve(run_id, item["problem"], ground_truth=item.get("solution", ""))
             predicted = state.final_answer or state.current_proof
             completeness = check_proof_completeness(predicted)
             # 最终 Verifier 裁决（取最后一个 VERIFIER 历史项）
@@ -236,20 +300,11 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 verifier_entries[-1].decision.value if verifier_entries else "NO_VERDICT"
             )
             elapsed = time.time() - t0
-            # 采集 Agent 历史轮次信息（用于工作日志）
-            history_info = [
-                {
-                    "turn_id": h.turn_id,
-                    "agent_node": h.agent_node,
-                    "decision": str(h.decision.value) if h.decision else None,
-                    "tool_calls_count": len(h.tool_calls_trace) if h.tool_calls_trace else 0,
-                    "bug_report_snippet": (h.bug_report or "")[:300] if h.bug_report else None,
-                    "phase1_analysis": (h.phase1_analysis or "")[:500] if hasattr(h, "phase1_analysis") else None,
-                }
-                for h in state.history
-            ]
+            history_info = _serialize_history(state.history)
             entry = {
                 "problem_id": pid,
+                "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "level": item.get("level", ""),
                 "source": item.get("source", ""),
@@ -258,6 +313,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "has_final_answer": state.final_answer is not None,
                 "iterations": state.iteration_count,
                 "time_s": round(elapsed, 1),
+                "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
             status = "✅" if state.final_answer is not None else "⚠️"
@@ -267,6 +323,8 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
             elapsed = time.time() - t0
             entry = {
                 "problem_id": pid,
+                "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "level": item.get("level", ""),
                 "source": item.get("source", ""),
@@ -290,6 +348,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
         1 for r in results if r.get("final_verifier_decision") == "CORRECT"
     )
     has_ans = sum(1 for r in results if r.get("has_final_answer"))
+    partial_count = sum(1 for r in results if r.get("run_status") == "PARTIAL_PROGRESS")
     summary = {
         "dataset": "proofbench",
         "total": total,
@@ -299,6 +358,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
         "correct_verdict_rate": round(correct_v / total, 4) if total else 0.0,
         "has_final_answer": has_ans,
         "has_final_answer_rate": round(has_ans / total, 4) if total else 0.0,
+        "partial_progress": partial_count,
         "error_count": sum(1 for r in results if "error" in r),
     }
     return results, summary
@@ -408,257 +468,6 @@ def _print_summary(summary: dict) -> None:
     print(f"{'═' * _W}\n")
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# 工作日志生成（Markdown）
-# ════════════════════════════════════════════════════════════════════════════
-
-def generate_worklog_markdown(
-    all_results: dict[str, list[dict]],
-    all_summaries: list[dict],
-    start_time: datetime,
-    output_path: str = "data/logs/imobench工作日志.md",
-) -> None:
-    """根据测试结果生成可读性强的 Markdown 工作日志。
-
-    Args:
-        all_results: {dataset_name: [per-item result dict, ...]}
-        all_summaries: [summary dict, ...]
-        start_time: 测试开始时间
-        output_path: 输出 Markdown 路径
-    """
-    lines: list[str] = []
-    end_time = datetime.now()
-    elapsed_total = (end_time - start_time).total_seconds()
-
-    def H(n: int, title: str) -> None:
-        lines.append("#" * n + " " + title)
-        lines.append("")
-
-    def P(text: str) -> None:
-        lines.append(text)
-        lines.append("")
-
-    def HR() -> None:
-        lines.append("---")
-        lines.append("")
-
-    # ── 标题 ──────────────────────────────────────────────────────────
-    H(1, "Aletheia IMOBench 评测工作日志")
-    P(f"**测试时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} — {end_time.strftime('%H:%M:%S')}"
-      f"  （总耗时 {elapsed_total/60:.1f} 分钟）")
-    P("**数据集**: AnswerBench (answerbench_v2) + ProofBench  |  **每题最大轮次**: 3")
-    HR()
-
-    # ── 汇总统计表 ────────────────────────────────────────────────────
-    H(2, "汇总统计")
-    for s in all_summaries:
-        ds = s["dataset"]
-        H(3, f"{ds.upper()} 汇总")
-        lines.append("| 指标 | 值 |")
-        lines.append("|------|-----|")
-        for k, v in s.items():
-            if k == "dataset":
-                continue
-            if k == "confusion_matrix":
-                continue
-            lines.append(f"| {k} | {v} |")
-        lines.append("")
-
-        if "confusion_matrix" in s:
-            H(4, "混淆矩阵（人工标签 → 预测标签）")
-            lines.append("| 人工标签 \\ 预测 | CORRECT | PARTIAL | INCORRECT | UNKNOWN |")
-            lines.append("|-----------------|---------|---------|-----------|---------|")
-            for human_label, pred_counts in s["confusion_matrix"].items():
-                row_str = (
-                    f"| **{human_label}** "
-                    f"| {pred_counts.get('CORRECT',0)} "
-                    f"| {pred_counts.get('PARTIAL',0)} "
-                    f"| {pred_counts.get('INCORRECT',0)} "
-                    f"| {pred_counts.get('UNKNOWN',0)} |"
-                )
-                lines.append(row_str)
-            lines.append("")
-    HR()
-
-    # ── 逐题详细记录 ──────────────────────────────────────────────────
-    for dataset, results in all_results.items():
-        if not results:
-            continue
-        H(2, f"{dataset.upper()} 逐题过程记录")
-
-        for idx, r in enumerate(results, 1):
-            pid = r.get("problem_id", f"item_{idx}")
-            cat = r.get("category", "")
-            level = r.get("level", "")
-            subcategory = r.get("subcategory", "")
-            time_s = r.get("time_s", 0)
-            iters = r.get("iterations", r.get("iteration_count", 0))
-            error = r.get("error")
-
-            # 题目标题行
-            meta_parts = [x for x in [cat, subcategory, level] if x]
-            meta_str = " · ".join(meta_parts) if meta_parts else ""
-            H(3, f"[{idx}] {pid}" + (f"  `{meta_str}`" if meta_str else ""))
-
-            # 基本信息
-            lines.append(f"- **耗时**: {time_s:.1f}s  |  **迭代轮次**: {iters}")
-            if dataset == "answerbench":
-                correct = r.get("correct", False)
-                gt = r.get("ground_truth", "")
-                status = "✅ 正确" if correct else "❌ 错误"
-                lines.append(f"- **结果**: {status}  |  **标准答案**: `{gt[:80]}`")
-            elif dataset == "proofbench":
-                decision = r.get("final_verifier_decision", "NO_VERDICT")
-                has_ans = r.get("has_final_answer", False)
-                fmt_ok = r.get("completeness", {}).get("has_preliminary_solution", False)
-                lines.append(f"- **Verifier裁决**: `{decision}`  |  "
-                              f"**格式完整**: {'✅' if fmt_ok else '❌'}  |  "
-                              f"**有最终答案**: {'✅' if has_ans else '❌'}")
-            lines.append("")
-
-            # 错误记录
-            if error:
-                lines.append(f"> ⚠️ **运行错误**: `{error}`")
-                lines.append("")
-
-            # Agent 历史轮次记录
-            history = r.get("history", [])
-            if history:
-                lines.append("**解题过程（Agent 历史）**:")
-                lines.append("")
-                lines.append("| 轮次 | Agent | 裁决 | 工具调用 | Bug/警告摘要 |")
-                lines.append("|------|-------|------|----------|--------------|")
-                for h in history:
-                    turn_id = h.get("turn_id", "?")
-                    node = h.get("agent_node", "?")
-                    dec = h.get("decision") or "—"
-                    tc = h.get("tool_calls_count", 0)
-                    bug_snip = (h.get("bug_report_snippet") or "—")[:80].replace("\n", " ")
-                    lines.append(f"| {turn_id} | {node} | `{dec}` | {tc} | {bug_snip} |")
-                lines.append("")
-
-                # 详细 Phase1 分析（仅 VERIFIER）
-                for h in history:
-                    if h.get("agent_node") == "VERIFIER" and h.get("phase1_analysis"):
-                        p1 = (h.get("phase1_analysis") or "")[:500].strip()
-                        if p1:
-                            lines.append(f"<details><summary>Turn {h.get('turn_id')} Verifier Phase1 分析摘要</summary>")
-                            lines.append("")
-                            lines.append("```")
-                            lines.append(p1)
-                            lines.append("```")
-                            lines.append("")
-                            lines.append("</details>")
-                            lines.append("")
-
-                # Bug 详情（CRITICAL_FLAW / MINOR_FLAW）
-                for h in history:
-                    bug = h.get("bug_report_snippet")
-                    if bug and h.get("decision") in ("CRITICAL_FLAW", "MINOR_FLAW"):
-                        lines.append(f"**Turn {h.get('turn_id')} Bug 报告摘要** (`{h.get('decision')}`):")
-                        lines.append("")
-                        lines.append("> " + bug[:300].replace("\n", "\n> "))
-                        lines.append("")
-
-            lines.append("---")
-            lines.append("")
-
-    # ── Bug & 警告汇总 ────────────────────────────────────────────────
-    H(2, "Bug 与警告汇总")
-    bug_count = 0
-    for dataset, results in all_results.items():
-        for r in results:
-            if r.get("error"):
-                bug_count += 1
-                pid = r.get("problem_id", "?")
-                lines.append(f"- **[{dataset}] {pid}**: {r['error'][:200]}")
-    if bug_count == 0:
-        P("本次测试未发现运行时错误。")
-    else:
-        P(f"共发现 {bug_count} 道题目运行出错，详见上方逐题记录。")
-    HR()
-
-    H(2, "复盘分析说明")
-    lines.append("本日志由 `run_imobench.py` 自动生成，记录了 Aletheia 框架在 IMOBench 上的完整评测过程。")
-    lines.append("")
-    lines.append("**分析要点**：")
-    lines.append("- 关注 AnswerBench 中 Verifier 裁决为 CRITICAL_FLAW 的题目，分析是否是 Generator 解题方向有误。")
-    lines.append("- 关注 ProofBench 中格式不完整（无 `### Preliminary Solution ###` 标记）的情况。")
-    lines.append("- 工具调用次数为 0 但仍裁决为 CRITICAL_FLAW 的情况，可能说明 Verifier 仅靠阅读分析就发现了问题。")
-    lines.append("- 超时（time_s > 300）说明某一环节（通常是 Phase 2 工具调用）耗时过长，需关注网络稳定性。")
-    lines.append("")
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\n  📄 工作日志已保存至: {out}\n")
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# 数据加载（带 gradingbench 的 grading_guidelines 字段修正）
-# ════════════════════════════════════════════════════════════════════════════
-
-def load_gradingbench_full(path: str = "data/imobench/gradingbench.csv") -> list[dict]:
-    """加载 gradingbench 并保留 Grading guidelines 字段（data_loader 默认不加载此列）。"""
-    import csv
-    from pathlib import Path as _Path
-    results = []
-    with open(_Path(path), encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            results.append({
-                "problem_id": f"gradingbench_{i:04d}",
-                "grading_id": row.get("Grading ID", f"GB-{i:04d}"),
-                "source_problem_id": row.get("Problem ID", ""),
-                "problem": row.get("Problem", ""),
-                "solution": row.get("Solution", ""),
-                "grading_guidelines": row.get("Grading guidelines", ""),
-                "response": row.get("Response", ""),
-                "points": _safe_int(row.get("Points", "0")),
-                "reward": row.get("Reward", ""),
-                "problem_source": row.get("Problem Source", ""),
-            })
-    return results
-
-
-def load_proofbench_full(path: str = "data/imobench/proofbench.csv") -> list[dict]:
-    """加载 proofbench 完整字段（含 Category、Level、Source）。"""
-    import csv
-    from pathlib import Path as _Path
-    results = []
-    with open(_Path(path), encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            results.append({
-                "problem_id": row.get("Problem ID", f"proofbench_{i:04d}"),
-                "problem": row.get("Problem", ""),
-                "solution": row.get("Solution", ""),
-                "category": row.get("Category", ""),
-                "level": row.get("Level", ""),
-                "source": row.get("Source", ""),
-            })
-    return results
-
-
-def load_answerbench_full(path: str = "data/imobench/answerbench_v2.csv") -> list[dict]:
-    """加载 answerbench_v2 完整字段（含 Category、Subcategory、Source）。"""
-    import csv
-    from pathlib import Path as _Path
-    results = []
-    with open(_Path(path), encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            results.append({
-                "problem_id": row.get("Problem ID", f"answerbench_{i:04d}"),
-                "problem": row.get("Problem", ""),
-                "answer": row.get("Short Answer", ""),
-                "category": row.get("Category", ""),
-                "subcategory": row.get("Subcategory", ""),
-                "source": row.get("Source", ""),
-            })
-    return results
-
-
 def select_proofbench_diverse(data: list[dict], n: int = 10) -> list[dict]:
     """从 proofbench 全集按类别+难度多样性选取 n 道题。
 
@@ -748,15 +557,6 @@ def select_answerbench_diverse(data: list[dict], n: int = 30) -> list[dict]:
         selected.append(item)
 
     return selected[:n]
-
-
-def _safe_int(s: str) -> int:
-    try:
-        return int(s)
-    except (ValueError, TypeError):
-        return 0
-
-
 # ════════════════════════════════════════════════════════════════════════════
 # 主函数
 # ════════════════════════════════════════════════════════════════════════════
@@ -790,12 +590,23 @@ def main() -> None:
         "--no-worklog", action="store_true",
         help="禁用 Markdown 工作日志生成",
     )
+    parser.add_argument(
+        "--worklog-summary-mode",
+        choices=["llm", "rule"],
+        default="llm",
+        help="工作日志阶段摘要模式：llm=调用模型二次摘要（默认），rule=规则摘要",
+    )
     args = parser.parse_args()
 
     # ── 加载配置 ──────────────────────────────────────────────────────
-    from src.core.config import load_config, load_prompts
     from src.core.agent import AletheiaAgent
+    from src.core.config import load_config, load_prompts
     from src.models.llm_client import create_llm_client
+    from src.utils.data_loader import (
+        load_answerbench_full,
+        load_gradingbench_full,
+        load_proofbench_full,
+    )
 
     config = load_config()
     prompts = load_prompts()
@@ -883,15 +694,30 @@ def main() -> None:
                       f"({s['3way_correct']}/{s['total']})")
         print(f"{'═' * _W}\n")
 
-    # ── 生成 Markdown 工作日志 ─────────────────────────────────────────
-    if not args.no_worklog and ("answerbench" in all_results or "proofbench" in all_results):
-        worklog_path = output_dir / f"imobench工作日志_{timestamp}.md"
-        generate_worklog_markdown(
-            all_results={k: v for k, v in all_results.items() if k in ("answerbench", "proofbench")},
-            all_summaries=[s for s in all_summaries if s["dataset"] in ("answerbench", "proofbench")],
-            start_time=start_time,
-            output_path=str(worklog_path),
-        )
+    # ── 批量结束后按题生成新版 Markdown 工作日志 ────────────────────────
+    if not args.no_worklog:
+        from src.utils.worklog_builder import WorklogBuilder
+
+        wb = WorklogBuilder(llm_config=config)
+        generated_count = 0
+        for dataset_results in all_results.values():
+            for row in dataset_results:
+                run_id = row.get("run_id")
+                pid = row.get("problem_id")
+                log_key = run_id or pid
+                if not log_key:
+                    continue
+                jsonl_path = Path("data/logs") / f"{log_key}.jsonl"
+                if not jsonl_path.exists():
+                    continue
+                md_path = Path("data/logs") / f"{log_key}.md"
+                try:
+                    wb.build_problem_worklog(str(jsonl_path), str(md_path))
+                    generated_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  ⚠️  worklog 生成失败 {log_key}: {exc}")
+        if generated_count:
+            print(f"  📄 已生成 {generated_count} 份题目级工作日志（WorklogBuilder）。")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ def check_proof_completeness(predicted_proof: str) -> dict:
     """解答格式完整性检查（不依赖 LLM）。
 
     在 proofbench 评测时用于检查解答结构是否完整。
+    当前规范下，完整解答以 `<solution>...</solution>` 为准。
+
     返回 {
         "has_preliminary_solution": bool,
         "has_summary": bool,
@@ -17,16 +19,9 @@ def check_proof_completeness(predicted_proof: str) -> dict:
     }
     """
     text = predicted_proof or ""
-    # 兼容 LLM 输出的多种变体：
-    #   ### Preliminary Solution ###  （标准）
-    #   ### Preliminary Solution       （省略尾部 ###）
-    #   **Preliminary Solution**       （Markdown 粗体）
-    _has_prelim = bool(re.search(
-        r"(?:#{2,3}\s*)?(?:\*\*)?Preliminary\s+Solution(?:\*\*)?\s*(?:#{2,3})?",
-        text, re.IGNORECASE,
-    ))
+    has_solution = bool(re.search(r"<solution>.*?</solution>", text, re.IGNORECASE | re.DOTALL))
     return {
-        "has_preliminary_solution": _has_prelim,
+        "has_preliminary_solution": has_solution,
         "has_summary": "Summary" in text,
         "proof_length": len(text),
         "has_qed_marker": bool(re.search(r"QED|Q\.E\.D\.|∎|□|\\blacksquare|\\square|\\qed", text)),
@@ -39,10 +34,9 @@ def check_answer(predicted: str, ground_truth: str) -> bool:
     从 predicted 中提取 \\boxed{} 答案，与 ground_truth 进行
     LaTeX 归一化比较。无 \\boxed{} 时尝试提取最后一行。
     """
-    # 提取预测答案
+    # 优先提取 \boxed{} 结果；若无则退化到最后一个非空行
     extracted = extract_boxed_answer(predicted or "")
     if extracted is None:
-        # fallback：取最后一个非空行
         lines = [l.strip() for l in (predicted or "").strip().splitlines() if l.strip()]
         extracted = lines[-1] if lines else ""
 

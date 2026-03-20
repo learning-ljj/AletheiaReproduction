@@ -3,8 +3,11 @@
 import html
 import logging
 import re
+import time
 import urllib.parse
 import urllib.request
+
+from src.tools._http_utils import urlopen_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +20,14 @@ _MAX_CONTENT_CHARS = 8000
 # MediaWiki API 底层请求
 # ------------------------------------------------------------------
 
+
 def _wiki_request(params: dict) -> dict:
     base = {"format": "json", "formatversion": "2", "redirects": "1"}
     all_params = {**params, **base}
     url = _WIKI_API + "?" + urllib.parse.urlencode(all_params)
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        import json
-        return json.loads(resp.read().decode("utf-8"))
+    import json
+    return json.loads(urlopen_with_retry(req, timeout=15).decode("utf-8"))
 
 
 def _search_pages(term: str, limit: int = 5) -> list[dict]:

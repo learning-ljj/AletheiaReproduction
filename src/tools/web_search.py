@@ -3,12 +3,13 @@
 import gzip
 import io
 import logging
-import ssl
 import tarfile
 import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+
+from src.tools._http_utils import urlopen_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,46 +18,6 @@ _ARXIV_QUERY_URL = "http://export.arxiv.org/api/query"
 _ARXIV_EPRINT_URL = "https://export.arxiv.org/e-print"
 _USER_AGENT = "Mozilla/5.0 (Aletheia-Agent)"
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
-_MAX_FETCH_RETRIES = 3  # Bug #2 修复：网络请求失败时最多重试次数
-
-
-def _make_lenient_ssl_ctx() -> ssl.SSLContext:
-    """创建宽松 SSL 上下文，用于 SSL 握手失败的降级重试。"""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-def _urlopen_with_retry(req: urllib.request.Request, timeout: int) -> bytes:
-    """带重试与 SSL 降级的 urlopen 封装。
-
-    重试策略：
-      1. 首次使用默认 SSL（标准安全）；
-      2. 若 SSL 错误，降级到宽松 SSL 上下文重试；
-      3. 其他网络错误：最多 _MAX_FETCH_RETRIES 次指数退避。
-    """
-    last_error: Exception | None = None
-    for attempt in range(_MAX_FETCH_RETRIES):
-        if attempt > 0:
-            time.sleep(2 ** (attempt - 1))  # 1 s → 2 s 指数退避
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
-        except ssl.SSLError as e:
-            logger.warning("SSL error on attempt %d/%d: %s — retrying with lenient SSL context.",
-                           attempt + 1, _MAX_FETCH_RETRIES, e)
-            try:
-                with urllib.request.urlopen(req, timeout=timeout,
-                                            context=_make_lenient_ssl_ctx()) as resp:
-                    return resp.read()
-            except Exception as e2:
-                last_error = e2
-                logger.warning("Lenient SSL retry also failed: %s", e2)
-        except Exception as e:
-            last_error = e
-            logger.warning("Network error on attempt %d/%d: %s", attempt + 1, _MAX_FETCH_RETRIES, e)
-    raise last_error or RuntimeError("_urlopen_with_retry: unexpected failure")
 
 
 def search_arxiv(query: str, max_results: int = 3) -> list[dict]:
@@ -74,7 +35,7 @@ def search_arxiv(query: str, max_results: int = 3) -> list[dict]:
     try:
         time.sleep(1)  # 遵循 arXiv API 限流规范
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        xml_data = _urlopen_with_retry(req, timeout=15)
+        xml_data = urlopen_with_retry(req, timeout=15)
 
         root = ET.fromstring(xml_data)
         results: list[dict] = []
@@ -167,7 +128,7 @@ def read_arxiv_latex(arxiv_id: str, max_chars: int = 4000) -> str:
     try:
         time.sleep(1)  # 遵循 arXiv API 限流规范
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        file_bytes = _urlopen_with_retry(req, timeout=30)
+        file_bytes = urlopen_with_retry(req, timeout=30)
 
         stream = io.BytesIO(file_bytes)
         tex_content: list[str] = []

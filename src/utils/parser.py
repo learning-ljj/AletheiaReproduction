@@ -1,59 +1,56 @@
 """输出解析器：从 LLM 输出中提取解答正文、boxed 答案、裁决等。"""
 
-import logging
 import re
 
 from src.core.state import VerificationDecision
 
-logger = logging.getLogger(__name__)
 
-PRELIMINARY_SOLUTION_MARKER = "### Preliminary Solution ###"
-
-# Bug #1 修复：兼容 LLM 输出的多种标题变体：
-#   ### Preliminary Solution ###     （标准）
-#   ### Preliminary Solution          （省略尾部 ###）
-#   ## Preliminary Solution ##        （双井号）
-#   ## Preliminary Solution           （双井号无尾）
-#   **Preliminary Solution**          （Markdown 粗体）
-#   Preliminary Solution:             （无 Markdown 前缀，仅冒号）
-#   ### 2. Preliminary Solution ###   （LLM 擅自添加数字编号）
-#   ### 2. Preliminary Solution       （带编号且省略尾部 ###）
-_PRELIMINARY_SOLUTION_RE = re.compile(
-    r"(?:#{2,3}\s*)?(?:\*\*)?(?:\d+\.\s*)?Preliminary\s+Solution(?:\*\*)?\s*(?:#{2,3})?",
-    re.IGNORECASE,
-)
-
-# 裁决标签正则（旧格式）：兼容 Markdown 粗体（**[TAG]**）、前缀冒号（: [TAG]）、
-# 空格分隔等各种 LLM 输出变体；不区分大小写。
-_VERDICT_RE = re.compile(
-    r"\[(?P<tag>CRITICAL_FLAW|MINOR_FLAW|CORRECT)\]",
-    re.IGNORECASE,
-)
-
-# 新格式裁决正则：匹配 Phase 3 prompt 要求的 [DECISION]: VALUE 格式
-# 例如: [DECISION]: CORRECT / [DECISION]: MINOR_FLAW / [DECISION]: CRITICAL_FLAW
-_DECISION_TAG_RE = re.compile(
-    r"\[DECISION\]\s*:\s*(?P<value>CRITICAL_FLAW|MINOR_FLAW|CORRECT)\b",
-    re.IGNORECASE,
-)
+def extract_xml_tag(text: str, tag: str) -> str:
+    """从文本中提取 <tag>...</tag> 内的内容；找不到返回空字符串。"""
+    open_tag = f"<{tag}>"
+    close_tag = f"</{tag}>"
+    start = text.find(open_tag)
+    if start == -1:
+        return ""
+    start += len(open_tag)
+    end = text.find(close_tag, start)
+    if end == -1:
+        return ""
+    return text[start:end].strip()
 
 
 def extract_preliminary_solution(text: str) -> str:
-    """提取 '### Preliminary Solution ###' 标记之后的完整解答正文。
+    """严格提取 `<solution>...</solution>` 内的完整解答正文。"""
+    solution = extract_xml_tag(text, "solution")
+    if solution:
+        return solution
+    raise ValueError("Missing <solution> tag")
 
-    同时兼容 LLM 省略尾部 '###' 的情况（如 '### Preliminary Solution'）。
-    如果找不到标记，发出警告日志并返回原始文本（容错处理，避免静默吞掉 Summary 区块）。
+
+def extract_generator_candidate_from_reasoning(reasoning_text: str) -> str:
+    """从 Generator 思维链中正则提取并标准化 `<verdict>/<solution>`。
+
+    仅当两个标签都能提取到非空内容时返回标准化文本；
+    否则返回空字符串。
     """
-    m = _PRELIMINARY_SOLUTION_RE.search(text)
-    if m is None:
-        logger.warning(
-            "extract_preliminary_solution: '### Preliminary Solution ###' marker not found "
-            "in LLM output (len=%d). Returning full text as fallback. "
-            "This may cause Verifier to receive the Summary section as part of the solution.",
-            len(text),
-        )
-        return text
-    return text[m.end():].strip()
+    text = reasoning_text or ""
+    if not text.strip():
+        return ""
+
+    # 严格匹配：要求小写标签 <verdict>...</verdict> 紧跟可选空白后 <solution>...</solution>
+    # 仅允许空格、制表或换行作为两标签之间的间隔；不支持大小写变体。
+    pair_re = re.compile(r"<verdict>(.*?)</verdict>[ \t\r\n]*<solution>(.*?)</solution>", re.DOTALL)
+    matches = list(pair_re.finditer(text))
+    if not matches:
+        return ""
+
+    last = matches[-1]
+    verdict = (last.group(1) or "").strip()
+    solution = (last.group(2) or "").strip()
+    if not verdict or not solution:
+        return ""
+
+    return f"<verdict>{verdict}</verdict>\n<solution>{solution}</solution>"
 
 
 def extract_boxed_answer(text: str) -> str | None:
@@ -87,89 +84,60 @@ def extract_boxed_answer(text: str) -> str | None:
     return results[-1] if results else None
 
 
-def extract_section(text: str, marker: str, after: bool = True) -> str:
-    """基于标记提取文本段落。
-
-    Args:
-        text: 完整文本
-        marker: 分割标记字符串
-        after: True 返回标记之后的文本，False 返回标记之前的文本
-    Returns:
-        提取的文本段落，找不到标记返回空字符串。
-    """
-    idx = text.find(marker)
-    if idx == -1:
-        return ""
-    if after:
-        return text[idx + len(marker) :].strip()
-    else:
-        return text[:idx].strip()
+def extract_verification_report(verification_text: str) -> str:
+    """严格从 `<verification>...</verification>` 中提取验证报告。"""
+    result = extract_xml_tag(verification_text, "verification")
+    if result:
+        return result
+    raise ValueError("Missing <verification> tag in Verifier output")
 
 
-def extract_bug_report(verification_text: str) -> str:
-    """从 Verifier 完整输出中提取 bug report（Summary 部分）。
-
-    提取 'Detailed Verification' 标记之前的所有文本
-    （包含 Summary + List of Findings）。
-    如果找不到标记，返回完整文本。
-    """
-    result = extract_section(verification_text, "Detailed Verification", after=False)
-    return result if result else verification_text
-
-
-def parse_verification_verdict(verification_text: str) -> VerificationDecision:
-    """从 Verifier 完整输出中解析三路裁决。
-
-    解析策略（按优先级）：
-      1a. 新格式：正则匹配 [DECISION]: VALUE（Phase 3 prompt 要求的强制格式）
-            [DECISION]: CORRECT / [DECISION]: MINOR_FLAW / [DECISION]: CRITICAL_FLAW
-      1b. 旧格式（兼容回退）：正则匹配所有 [TAG] 标签（大小写不敏感），
-            按严重度优先：CRITICAL_FLAW > MINOR_FLAW > CORRECT
-            兼容 Markdown 粗体包裹（**[CRITICAL_FLAW]**）等变体。
-      2.  Fallback: 自由文本关键词搜索（'CRITICAL ERROR' / 'JUSTIFICATION GAP'）
-      3.  全部未匹配 → 默认 MINOR_FLAW（保守策略），并发出警告日志
-    """
-    # 策略 1a：优先匹配新格式 [DECISION]: VALUE（Phase 3 prompt 要求的强制格式）
-    m = _DECISION_TAG_RE.search(verification_text)
-    if m:
-        value = m.group("value").upper()
-        if value == "CRITICAL_FLAW":
+def parse_verification_decision(verification_text: str) -> VerificationDecision:
+    """从 Verifier 完整输出中解析三路裁决。"""
+    verdict_text = extract_xml_tag(verification_text, "verdict")
+    if verdict_text:
+        verdict_upper = verdict_text.strip().upper()
+        if verdict_upper == VerificationDecision.CRITICAL_FLAW.value:
             return VerificationDecision.CRITICAL_FLAW
-        if value == "MINOR_FLAW":
+        if verdict_upper == VerificationDecision.MINOR_FLAW.value:
             return VerificationDecision.MINOR_FLAW
-        if value == "CORRECT":
+        if verdict_upper == VerificationDecision.CORRECT.value:
             return VerificationDecision.CORRECT
+        raise ValueError(f"Invalid <verdict> value: {verdict_text!r}")
 
-    # 策略 1b：回退到旧格式 [TAG]（兼容历史日志及 LLM 未严格遵守新格式的情况）
-    # 正则提取所有 [TAG] 标签，按严重度优先返回
-    found_tags = {tag.upper() for tag in _VERDICT_RE.findall(verification_text)}
-    if "CRITICAL_FLAW" in found_tags:
-        return VerificationDecision.CRITICAL_FLAW
-    if "MINOR_FLAW" in found_tags:
-        return VerificationDecision.MINOR_FLAW
-    if "CORRECT" in found_tags:
-        return VerificationDecision.CORRECT
+    raise ValueError("Missing <verdict> tag in Verifier output")
 
-    # 策略 2：自由文本关键词 Fallback
-    text_upper = verification_text.upper()
-    if "CRITICAL ERROR" in text_upper:
-        logger.warning(
-            "parse_verification_verdict: No [TAG] found; fallback to CRITICAL_FLAW "
-            "via 'CRITICAL ERROR' keyword."
-        )
-        return VerificationDecision.CRITICAL_FLAW
-    if "JUSTIFICATION GAP" in text_upper:
-        logger.warning(
-            "parse_verification_verdict: No [TAG] found; fallback to MINOR_FLAW "
-            "via 'JUSTIFICATION GAP' keyword."
-        )
-        return VerificationDecision.MINOR_FLAW
 
-    # 策略 3：默认保守策略（发出警告）
-    logger.warning(
-        "parse_verification_verdict: No verdict tag or keyword found in Verifier output "
-        "(len=%d). Defaulting to MINOR_FLAW (conservative). "
-        "Check if Verifier followed the Phase 3 output format.",
-        len(verification_text),
-    )
-    return VerificationDecision.MINOR_FLAW
+def normalize_short_answer(text: str) -> str:
+    """Normalize a short-answer string for exact-match checking.
+
+    Goal: extract a concise canonical representation for short answers
+    (prefer integers/fractions/decimal) while stripping LaTeX tags,
+    surrounding words like '答案', and punctuation.
+    """
+    if not text:
+        return ""
+    import re
+
+    s = str(text).strip()
+    # Remove XML/HTML tags
+    s = re.sub(r"<[^>]+>", "", s)
+    # Replace full-width digits with ASCII
+    s = s.translate(str.maketrans(
+        {chr(0xFF10 + i): str(i) for i in range(10)}
+    ))
+    # Remove common leading labels
+    s = re.sub(r'(?i)^(答案[:：\s]*|answer[:：\s]*|verdict[:：\s]*)', "", s).strip()
+    # If inside $...$ math, unwrap the first math region
+    m = re.search(r"\$(.*?)\$", s)
+    if m:
+        s = m.group(1).strip()
+
+    # Try to find an integer, fraction or decimal number first
+    m = re.search(r"[-+]?\d+(?:/\d+)?(?:\.\d+)?", s)
+    if m:
+        return m.group(0).strip()
+
+    # Fallback: remove surrounding punctuation and whitespace
+    s = s.strip().strip('.,;:\\"\'()[]')
+    return s
