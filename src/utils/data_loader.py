@@ -79,7 +79,17 @@ def lookup_ground_truth(problem_id: str) -> tuple[str | None, str | None]:
     except Exception:
         pass
 
-    # 兼容 PB-* 等题号：从 gradingbench 的 source_problem_id 回填参考解答。
+    # 兼容 PB-* 等证明题：从 proofbench 的 Solution 回填参考解答。
+    try:
+        for row in load_proofbench_full():
+            if (row.get("problem_id") or "").strip() == normalized:
+                sol = (row.get("solution") or "").strip()
+                if sol:
+                    return sol, "proofbench.csv:Solution"
+    except Exception:
+        pass
+
+    # 从 gradingbench 的 source_problem_id 回填参考解答。
     try:
         for row in load_gradingbench_full():
             if (row.get("source_problem_id") or "").strip() == normalized:

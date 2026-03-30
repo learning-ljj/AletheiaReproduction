@@ -99,8 +99,8 @@ def _serialize_history(history) -> list[dict]:
 
 
 def _last_verifier_decision(history: list[dict]) -> str | None:
-    verifier = [x for x in history if x.get(“agent_node”) == “VERIFIER”]
-    return verifier[-1].get(“decision”) if verifier else None
+    verifier = [x for x in history if x.get("agent_node") == "VERIFIER"]
+    return verifier[-1].get("decision") if verifier else None
 
 
 # ════════════════════════════════════════════════════════════════════════════

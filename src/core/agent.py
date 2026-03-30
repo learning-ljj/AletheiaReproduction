@@ -2,12 +2,12 @@
 
 from src.core.finalizer import build_final_output
 from src.core.orchestrator import Orchestrator
-from src.core.pipeline import call_final_assessor, call_generator, call_reviser, call_verifier
+from src.core.pipeline import call_final, call_generator, call_reviser, call_verifier
 from src.core.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
 from src.tools.registry import execute_tool, get_tool_schemas
-from src.utils.logger import append_raw_event
+from src.utils.logger import append_raw_event, save_final_output_markdown
 
 
 class _PipelineAdapter:
@@ -24,7 +24,7 @@ class _PipelineAdapter:
         return call_generator(self.llm_client, self.prompts, problem_text, lesson=lesson)
 
     def call_verifier(self, problem_text: str, proof_text: str):
-        # Verifier 只接收题目与解答正文，不再传入 reasoning_content。
+        # Verifier 只接收题目与解答正文，不传入 reasoning_content。
         return call_verifier(
             self.llm_client,
             self.prompts,
@@ -43,14 +43,14 @@ class _PipelineAdapter:
             verification_report,
         )
 
-    def call_final_assessor(
+    def call_final(
         self,
         problem_text: str,
         current_solution: str,
         last_verifier_decision: str,
         last_verification_report: str,
     ):
-        return call_final_assessor(
+        return call_final(
             self.llm_client,
             self.prompts,
             problem_text,
@@ -67,6 +67,10 @@ class _LoggerAdapter:
     def append_raw_event(problem_id: str, payload: dict) -> None:
         append_raw_event(problem_id=problem_id, payload=payload)
 
+    @staticmethod
+    def save_final_output_markdown(problem_id: str, final_output: str) -> None:
+        save_final_output_markdown(problem_id=problem_id, final_output=final_output)
+
 
 class _FinalizerAdapter:
     """把函数式 finalizer 封装成对象，统一 Orchestrator 依赖接口。"""
@@ -79,6 +83,7 @@ class _FinalizerAdapter:
         *,
         partial: bool = False,
         assessment_output: str | None = None,
+        preserve_xml: bool = False,
     ) -> str:
         return build_final_output(
             success=success,
@@ -86,6 +91,7 @@ class _FinalizerAdapter:
             failure_reason=failure_reason,
             partial=partial,
             assessment_output=assessment_output,
+            preserve_xml=preserve_xml,
         )
 
 

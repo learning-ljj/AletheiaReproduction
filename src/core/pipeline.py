@@ -7,6 +7,7 @@ from src.models.llm_client import LLMClient, LLMResponse
 from src.utils.parser import (
     extract_generator_candidate_from_reasoning,
     extract_xml_tag,
+    parse_final_xml_output,
     extract_preliminary_solution,
     extract_verification_report,
     parse_verification_decision,
@@ -25,8 +26,8 @@ def _has_verifier_contract(text: str | None) -> bool:
     return _has_xml_tag(text, "verdict") and _has_xml_tag(text, "verification")
 
 
-def _has_final_assessor_contract(text: str | None) -> bool:
-    """终局评估器必须输出 status+verdict+solution 三段。"""
+def _has_final_contract(text: str | None) -> bool:
+    """FINAL 必须输出 status+verdict+solution 三段。"""
     return _has_xml_tag(text, "status") and _has_xml_tag(text, "verdict") and _has_xml_tag(text, "solution")
 
 
@@ -226,16 +227,20 @@ def call_reviser(
     return last_response or LLMResponse(content="", reasoning_content="")
 
 
-def call_final_assessor(
+def call_final(
     llm_client: LLMClient,
     prompts: dict,
     problem_text: str,
     current_solution: str,
     last_verifier_decision: str,
     last_verification_report: str,
-) -> tuple[str, str]:
-    """在 verifier 轮次耗尽后，判定 PARTIAL_PROGRESS / BEYOND_CAPABILITY。"""
-    user_content = prompts["final_assessor"]["user"].format(
+) -> tuple[str, str, str, str]:
+    """在 verifier 轮次耗尽后，单次调用 FINAL 判定终态并给出最终报告。"""
+    final_prompts = prompts.get("final") or prompts.get("final_assessor")
+    if not final_prompts:
+        raise ValueError("Missing prompts.final (or legacy prompts.final_assessor)")
+
+    user_content = final_prompts["user"].format(
         problem_statement=problem_text,
         current_solution=current_solution,
         last_verifier_decision=last_verifier_decision,
@@ -243,7 +248,7 @@ def call_final_assessor(
     )
 
     messages: list[dict] = [
-        {"role": "system", "content": prompts["final_assessor"]["system"]},
+        {"role": "system", "content": final_prompts["system"]},
         {"role": "user", "content": user_content},
     ]
 
@@ -254,16 +259,14 @@ def call_final_assessor(
         "<solution>...</solution>"
     )
 
-    resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL-ASSESSOR")
+    resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL")
     text = resp.content or ""
-    if not _has_final_assessor_contract(text):
+    if not _has_final_contract(text):
         messages[-1] = {"role": "user", "content": retry_user}
-        resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL-ASSESSOR")
+        resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL")
         text = resp.content or ""
-        if not _has_final_assessor_contract(text):
-            raise ValueError("Final assessor missing required <status>/<verdict>/<solution> tags")
+        if not _has_final_contract(text):
+            raise ValueError("FINAL output missing required <status>/<verdict>/<solution> tags")
 
-    status = extract_xml_tag(text, "status").strip().upper()
-    if status not in ("PARTIAL_PROGRESS", "BEYOND_CAPABILITY"):
-        raise ValueError(f"Invalid final assessor status: {status!r}")
-    return status, text
+    status, verdict, solution = parse_final_xml_output(text)
+    return status, verdict, solution, text
