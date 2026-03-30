@@ -1,4 +1,4 @@
-provider: "${LLM_PROVIDER}"   # "deepseek"(默认) 或 "volcano"(火山方舟引擎)
+provider: "${LLM_PROVIDER}"   # "deepseek" 或 "volcano"(火山方舟引擎, 默认)
 
 llm_defaults:
   thinking: true

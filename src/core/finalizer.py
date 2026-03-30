@@ -10,6 +10,7 @@ def build_final_output(
     *,
     partial: bool = False,
     assessment_output: str | None = None,
+    preserve_xml: bool = False,
 ) -> str:
     """构造最终输出文本。
 
@@ -18,12 +19,15 @@ def build_final_output(
         solution_text: 解答内容（SUCCESS / PARTIAL 时非空）。
         failure_reason: 失败原因标识（FAILED 时非空）。
         partial: 是否为部分进展（轮次耗尽但有实质性解答内容）。
-        assessment_output: Final Assessor 的原始 XML 输出（可选）。
+        assessment_output: FINAL 节点的原始 XML 输出（可选）。
+        preserve_xml: 若为 True，优先保留原始 XML 输出，便于后续结构化处理。
     """
     if success:
         return (solution_text or "").strip()
 
     if assessment_output:
+        if preserve_xml:
+            return assessment_output.strip()
         solution_block = extract_xml_tag(assessment_output, "solution").strip()
         verdict_block = extract_xml_tag(assessment_output, "verdict").strip()
         status_block = extract_xml_tag(assessment_output, "status").strip().upper()

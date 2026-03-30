@@ -1,6 +1,7 @@
 """工作日志构建器：从 raw JSONL 离线生成结构化 Markdown。"""
 
 import json
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +74,22 @@ class WorklogBuilder:
         if isinstance(value, str):
             return [value]
         return None
+
+    @staticmethod
+    def _strip_leading_enumeration(text: str) -> str:
+        """清理单条摘要项开头可能存在的编号前缀，避免渲染时出现重复序号。"""
+        s = (text or "").strip()
+        if not s:
+            return s
+
+        patterns = [
+            r"^\(?\d+\)?[\.)、．]\s*",      # 1. / 1) / (1) / 1、
+            r"^[（(]\d+[）)]\s*",             # （1） / (1)
+            r"^[一二三四五六七八九十]+[、.．]\s*",  # 一、 / 二.
+        ]
+        for pattern in patterns:
+            s = re.sub(pattern, "", s)
+        return s.strip()
 
     def _llm_json(self, system: str, user: str, required_keys: list[str]) -> tuple[dict | None, str | None]:
         client = self._active_llm_client or self.llm_client
@@ -350,7 +367,8 @@ class WorklogBuilder:
                         reasoning_info = self._summarize_reasoning(role=node, raw_cot=reasoning)
                         lines.append("- 思维链摘要：")
                         for idx, item in enumerate(reasoning_info.get("step_summary", []), start=1):
-                            lines.append(f"  {idx}. {item}")
+                            clean_item = self._strip_leading_enumeration(str(item))
+                            lines.append(f"  {idx}. {clean_item}")
                         lines.append("- 思维链质量评估：")
                         for item in reasoning_info.get("quality_evaluation", []):
                             lines.append(f"  - {item}")

@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 from src.core.state import ProofState, RunStatus, VerificationLog, VerificationDecision
+from src.utils.parser import extract_xml_tag
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +29,35 @@ class Orchestrator:
 
     def _append_raw(self, problem_id: str, payload: dict) -> None:
         self.logger.append_raw_event(problem_id=problem_id, payload=payload)
+
+    def _save_artifact(self, state: ProofState) -> None:
+        """保存终态 final_output 到 artifact 目录。"""
+        if not (state.final_output or "").strip():
+            return
+        try:
+            self.logger.save_final_output_markdown(
+                problem_id=state.problem_id,
+                final_output=state.final_output,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.error("Failed to save final_output artifact: %s", exc)
+
+    @staticmethod
+    def _normalize_partial_solution(solution_text: str, fallback_undone: str) -> str:
+        """确保 PARTIAL 的 solution 使用两段模板，并包含 <done>/<undone> 子标签。"""
+        text = (solution_text or "").strip()
+        done_block = extract_xml_tag(text, "done").strip()
+        undone_block = extract_xml_tag(text, "undone").strip()
+
+        if done_block and undone_block:
+            return f"<done>{done_block}</done>\n<undone>{undone_block}</undone>"
+
+        if not done_block:
+            done_block = text or "无可复用的完整步骤。"
+        if not undone_block:
+            undone_block = (fallback_undone or "关键步骤仍缺失，无法形成完整可验证解答。").strip()
+
+        return f"<done>{done_block}</done>\n<undone>{undone_block}</undone>"
 
     def _classify_runtime_error(self, exc: Exception) -> str:
         """把底层异常归一化为稳定的失败原因。"""
@@ -57,6 +87,7 @@ class Orchestrator:
             "failure_reason": state.failure_reason,
             "final_output": state.final_output,
         })
+        self._save_artifact(state)
         return state
 
     def _finalize_success(self, state: ProofState, *, turn_id: int) -> ProofState:
@@ -75,6 +106,7 @@ class Orchestrator:
             "failure_reason": None,
             "final_output": state.final_output,
         })
+        self._save_artifact(state)
         return state
 
     def _finalize_exhausted(
@@ -85,40 +117,62 @@ class Orchestrator:
         last_verification_report: str,
         turn_id: int,
     ) -> ProofState:
-        """轮次耗尽后调用 Final Assessor，判定 PARTIAL_PROGRESS / BEYOND_CAPABILITY。"""
+        """轮次耗尽后仅调用一次 FINAL，判定 PARTIAL_PROGRESS / BEYOND_CAPABILITY。"""
         last_decision_value = last_decision.value if hasattr(last_decision, "value") else str(last_decision)
 
         try:
-            assess_status, assess_output = self.pipeline.call_final_assessor(
+            final_status, final_verdict, final_solution, final_xml_output = self.pipeline.call_final(
                 problem_text=state.problem_text,
                 current_solution=state.current_proof,
                 last_verifier_decision=last_decision_value,
                 last_verification_report=last_verification_report,
             )
         except Exception as exc:  # noqa: BLE001
-            _logger.error("Final assessor failed, fallback to heuristic status: %s", exc)
-            assess_status = "PARTIAL_PROGRESS" if state.current_proof else "BEYOND_CAPABILITY"
-            assess_output = None
+            _logger.error("FINAL call failed, fallback to heuristic status: %s", exc)
+            final_status = "PARTIAL_PROGRESS" if state.current_proof else "BEYOND_CAPABILITY"
+            final_verdict = (
+                "达到轮次上限，存在可复用进展。" if state.current_proof else "达到轮次上限，当前方案超出能力范围。"
+            )
+            fallback_undone = (
+                "尚未形成可通过 verifier 的完整证明，需补全关键推理链并消除核心漏洞。"
+                if state.current_proof
+                else "未形成有效解答，缺乏可复用的关键引理与可验证推导。"
+            )
+            fallback_solution = self._normalize_partial_solution(
+                (state.current_proof or "").strip(),
+                fallback_undone,
+            )
+            final_xml_output = (
+                f"<status>{final_status}</status>\n"
+                f"<verdict>{final_verdict}</verdict>\n"
+                f"<solution>{fallback_solution}</solution>"
+            )
+            final_solution = fallback_solution
 
-        self._append_raw(state.problem_id, {
-            "agent_node": "FINAL_ASSESSOR",
-            "turn_id": turn_id,
-            "timestamp": self._now(),
-            "last_verifier_decision": last_decision_value,
-            "assessment_status": assess_status,
-            "assessment_output": assess_output,
-        })
+        if final_status == RunStatus.PARTIAL.value:
+            normalized_solution = self._normalize_partial_solution(
+                final_solution,
+                "尚未形成可通过 verifier 的完整证明，需补全关键推理链并消除核心漏洞。",
+            )
+            if normalized_solution != final_solution:
+                final_solution = normalized_solution
+                final_xml_output = (
+                    f"<status>{final_status}</status>\n"
+                    f"<verdict>{final_verdict}</verdict>\n"
+                    f"<solution>{final_solution}</solution>"
+                )
 
-        if assess_status == RunStatus.PARTIAL.value:
+        if final_status == RunStatus.PARTIAL.value:
             state.status = RunStatus.PARTIAL
             state.failure_reason = "max_turns_exhausted"
-            state.final_answer = state.current_proof
+            state.final_answer = final_solution
             state.final_output = self.finalizer.build_final_output(
                 success=False,
                 solution_text=state.current_proof,
                 failure_reason=state.failure_reason,
                 partial=True,
-                assessment_output=assess_output,
+                assessment_output=final_xml_output,
+                preserve_xml=True,
             )
         else:
             state.status = RunStatus.FAILED
@@ -127,7 +181,8 @@ class Orchestrator:
                 success=False,
                 solution_text=state.current_proof,
                 failure_reason=state.failure_reason,
-                assessment_output=assess_output,
+                assessment_output=final_xml_output,
+                preserve_xml=True,
             )
 
         self._append_raw(state.problem_id, {
@@ -137,8 +192,12 @@ class Orchestrator:
             "status": state.status.value,
             "failure_reason": state.failure_reason,
             "last_verifier_decision": last_decision_value,
+            "final_status": final_status,
+            "final_verdict": final_verdict,
+            "xml_output": final_xml_output,
             "final_output": state.final_output,
         })
+        self._save_artifact(state)
         return state
 
     def _route_on_decision(self, decision: VerificationDecision, state: ProofState) -> str:
