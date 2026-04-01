@@ -24,28 +24,22 @@ def build_final_output(
         assessment_output: FINAL 节点的原始 XML 输出（可选）。
         preserve_xml: 若为 True，优先保留原始 XML 输出，便于后续结构化处理。
     """
-    base_output = ""
+    reason = (failure_reason or "unknown_reason").strip() or "unknown_reason"
+    solution_block = extract_xml_tag(assessment_output or "", "solution").strip()
+    verdict_block = extract_xml_tag(assessment_output or "", "verdict").strip()
+    status_block = extract_xml_tag(assessment_output or "", "status").strip().upper()
 
-    if success:
-        base_output = (solution_text or "").strip()
-    elif assessment_output:
-        if preserve_xml:
-            base_output = assessment_output.strip()
-        else:
-            solution_block = extract_xml_tag(assessment_output, "solution").strip()
-            verdict_block = extract_xml_tag(assessment_output, "verdict").strip()
-            status_block = extract_xml_tag(assessment_output, "status").strip().upper()
-            if solution_block:
-                base_output = solution_block
-            elif verdict_block:
-                base_output = verdict_block
-            elif status_block == "BEYOND_CAPABILITY":
-                base_output = "Admits failure: beyond_capability."
-    elif partial and solution_text:
-        base_output = (solution_text or "").strip()
-    else:
-        reason = (failure_reason or "unknown_reason").strip() or "unknown_reason"
-        base_output = f"Admits failure: {reason}."
+    candidates = [
+        (solution_text or "").strip() if success else "",
+        (assessment_output or "").strip() if preserve_xml else "",
+        solution_block,
+        verdict_block,
+        (solution_text or "").strip() if partial else "",
+        "Admits failure: beyond_capability." if status_block == "BEYOND_CAPABILITY" else "",
+        f"Admits failure: {reason}.",
+    ]
+
+    base_output = next((item for item in candidates if item), f"Admits failure: {reason}.")
 
     output = base_output.strip()
 
