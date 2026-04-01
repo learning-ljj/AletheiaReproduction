@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Callable
 
+from src.agents.citation_reviewer import CitationReviewerAgent
 from src.core.state import VerificationDecision
+from src.memory.problem_memory import get_current_problem_memory
 from src.utils.parser import (
     extract_preliminary_solution,
+    parse_citations,
     extract_verification_report,
     parse_verification_decision,
 )
@@ -47,6 +52,27 @@ class VerifierAgent:
         suffix = f"\n<{tag}>{default_content}</{tag}>"
         return (text or "").rstrip() + suffix
 
+    @staticmethod
+    def _upsert_tag(text: str, tag: str, content: str) -> str:
+        pattern = re.compile(rf"<{tag}>.*?</{tag}>", re.DOTALL)
+        replacement = f"<{tag}>{content}</{tag}>"
+        if pattern.search(text):
+            return pattern.sub(replacement, text, count=1)
+        return (text or "").rstrip() + "\n" + replacement
+
+    def _attach_citation_review(self, full_text: str, proof_text: str) -> str:
+        cites = parse_citations(proof_text)
+        if not cites:
+            return self._ensure_tag(full_text, "citation_review", default_content="NONE")
+
+        reviewer = CitationReviewerAgent(problem_memory=get_current_problem_memory())
+        review = reviewer.review(cites=cites, claim_spans=[])
+        return self._upsert_tag(
+            full_text,
+            "citation_review",
+            json.dumps(review, ensure_ascii=False),
+        )
+
     def _run_legacy_override(
         self,
         *,
@@ -74,7 +100,7 @@ class VerifierAgent:
         if override is not None:
             full_text, decision, verification_report, tool_trace, phase1 = override
             full_text = self._ensure_tag(full_text or "", "verified_lemmas", default_content="NONE")
-            full_text = self._ensure_tag(full_text, "citation_review", default_content="NONE")
+            full_text = self._attach_citation_review(full_text, proof_text)
             return full_text, decision, verification_report, tool_trace, phase1
 
         solution_body = extract_preliminary_solution(proof_text)
@@ -132,7 +158,7 @@ class VerifierAgent:
                 raise ValueError("Verifier Phase 3 missing required <verdict>/<verification> tags")
 
         full_text = self._ensure_tag(full_text, "verified_lemmas", default_content="NONE")
-        full_text = self._ensure_tag(full_text, "citation_review", default_content="NONE")
+        full_text = self._attach_citation_review(full_text, proof_text)
 
         decision = parse_verification_decision(full_text)
         verification_report = "" if decision == VerificationDecision.CORRECT else extract_verification_report(full_text)

@@ -1,9 +1,17 @@
 """Agent runtime package."""
 
 from src.agents.base import BaseAgent
+from src.agents.citation_reviewer import CitationReviewerAgent
 from src.agents.generator import GeneratorAgent
 from src.agents.reviser import ReviserAgent
 from src.agents.searcher import SearcherAgent
 from src.agents.verifier import VerifierAgent
 
-__all__ = ["BaseAgent", "GeneratorAgent", "ReviserAgent", "SearcherAgent", "VerifierAgent"]
+__all__ = [
+	"BaseAgent",
+	"CitationReviewerAgent",
+	"GeneratorAgent",
+	"ReviserAgent",
+	"SearcherAgent",
+	"VerifierAgent",
+]
