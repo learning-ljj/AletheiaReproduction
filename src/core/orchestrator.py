@@ -6,7 +6,12 @@ from pathlib import Path
 
 from src.core.state import ProofState, ProblemSnapshot, RunStatus, VerificationLog, VerificationDecision
 from src.memory.problem_memory import ProblemMemory
-from src.utils.parser import classify_parse_error, extract_xml_tag
+from src.utils.parser import (
+    classify_parse_error,
+    extract_xml_tag,
+    parse_citation_review,
+    parse_verified_lemmas,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -305,11 +310,24 @@ class Orchestrator:
             self.pipeline.call_verifier(
                 problem_text=state.problem_text, proof_text=state.current_proof,
             )
+
+        verified_lemmas = [
+            item for item in parse_verified_lemmas(verification_text)
+            if item and item.strip().upper() != "NONE"
+        ]
+        citation_review = parse_citation_review(verification_text).strip()
+
+        if self.problem_memory is not None:
+            for lemma in verified_lemmas:
+                self.problem_memory.add_lemma(lemma)
+
         state.history.append(VerificationLog(
             turn_id=turn_id, agent_node="VERIFIER",
             full_verification_text=verification_text, decision=decision,
             verification_report=verification_report,
             tool_calls_trace=tool_trace, phase1_analysis=phase1,
+            verified_lemmas=verified_lemmas,
+            citation_review=citation_review,
         ))
         self._append_raw(state.problem_id, {
             "agent_node": "VERIFIER",
@@ -320,6 +338,8 @@ class Orchestrator:
             "tool_calls_trace": tool_trace,
             "phase1_analysis": phase1,
             "full_verification_text": verification_text,
+            "verified_lemmas": verified_lemmas,
+            "citation_review": citation_review,
         })
         return decision, verification_report
 

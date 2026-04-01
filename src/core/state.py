@@ -33,6 +33,8 @@ class VerificationLog(BaseModel):
     verification_report: str | None = None       # 提取的验证报告
     phase1_analysis: str | None = None           # Verifier Phase 1 初步分析文本
     tool_calls_trace: list[dict] = Field(default_factory=list)
+    verified_lemmas: list[str] = Field(default_factory=list)
+    citation_review: str | None = None
     extracted_cot: str | None = None             # Generator/Reviser 思维链
     content: str | None = None                   # Generator/Reviser 最终解答
     parse_error: str | None = None               # 解析失败信息（严格 XML 模式）
