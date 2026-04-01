@@ -1,8 +1,9 @@
 """AletheiaAgent 门面：负责装配依赖并委托 Orchestrator。"""
 
+from src.agents.generator import GeneratorAgent
 from src.core.finalizer import build_final_output
 from src.core.orchestrator import Orchestrator
-from src.core.pipeline import call_final, call_generator, call_reviser, call_verifier
+from src.core.pipeline import call_final, call_reviser, call_verifier
 from src.core.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
@@ -18,10 +19,20 @@ class _PipelineAdapter:
         self.prompts = prompts
         self.tool_schemas = tool_schemas
         self.tool_executor = tool_executor
+        self.generator_agent = GeneratorAgent(
+            llm_client=self.llm_client,
+            system_prompt=self.prompts["generator"]["system"],
+            tools=self.tool_schemas,
+            tool_executor=self.tool_executor,
+            max_tool_rounds=5,
+        )
 
     def call_generator(self, problem_text: str, lesson: str | None = None):
-        # 这里把固定依赖绑定到实例，避免 Orchestrator 知道底层 LLM 细节。
-        return call_generator(self.llm_client, self.prompts, problem_text, lesson=lesson)
+        # C31: 主路径改为 GeneratorAgent 对象执行。
+        return self.generator_agent.run(
+            problem_text=problem_text,
+            error_lessons=lesson,
+        )
 
     def call_verifier(self, problem_text: str, proof_text: str):
         # Verifier 只接收题目与解答正文，不传入 reasoning_content。

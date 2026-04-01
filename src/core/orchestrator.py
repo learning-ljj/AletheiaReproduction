@@ -278,9 +278,11 @@ class Orchestrator:
             problem_text=state.problem_text,
             lesson=lesson,
         )
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        reasoning_content = getattr(resp, "reasoning_content", "")
         self._record_solution_node(
             state, node="GENERATOR", turn_id=turn_id,
-            content=resp.content, reasoning_content=resp.reasoning_content,
+            content=content, reasoning_content=reasoning_content,
         )
 
     def _execute_reviser_node(
