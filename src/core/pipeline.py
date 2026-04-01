@@ -1,4 +1,8 @@
-"""推理流水线函数：Generator / Verifier / Reviser。"""
+"""Legacy pipeline compatibility functions.
+
+Main execution chain has moved to object-style agents in src/agents/*.
+These functions are kept for compatibility and incremental migration only.
+"""
 
 from typing import Callable
 

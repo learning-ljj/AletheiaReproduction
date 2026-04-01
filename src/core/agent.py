@@ -13,8 +13,8 @@ from src.tools.registry import execute_tool, get_tool_schemas
 from src.utils.logger import append_raw_event, save_final_output_markdown
 
 
-class _PipelineAdapter:
-    """把函数式 pipeline 封装为对象接口，便于注入 Orchestrator。"""
+class _AgentRuntime:
+    """主链 Agent 运行时：直接装配 Generator/Verifier/Reviser 对象。"""
 
     def __init__(self, llm_client, prompts, tool_schemas, tool_executor):
         self.llm_client = llm_client
@@ -129,7 +129,7 @@ class AletheiaAgent:
         self.tool_executor = execute_tool
 
         # 在构造阶段完成依赖装配：solve 只负责创建状态并委托运行。
-        pipeline_adapter = _PipelineAdapter(
+        agent_runtime = _AgentRuntime(
             self.llm_client,
             self.prompts,
             self.tool_schemas,
@@ -137,7 +137,7 @@ class AletheiaAgent:
         )
         self.orchestrator = Orchestrator(
             max_turns=self.max_turns,
-            pipeline=pipeline_adapter,
+            pipeline=agent_runtime,
             logger=_LoggerAdapter(),
             finalizer=_FinalizerAdapter(),
             runs_root=self.runs_root,
