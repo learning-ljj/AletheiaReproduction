@@ -333,3 +333,60 @@ def test_citation_warning_soft_gate_route(tmp_path: Path) -> None:
     warning_events = [e for e in events if e.get("agent_node") == "WARNING"]
     assert warning_events
     assert warning_events[0].get("warning_type") == "citation_review"
+
+
+def test_route_critical_flaw_back_to_generator(tmp_path: Path) -> None:
+    class _CriticalPipeline:
+        def __init__(self):
+            self.generator_calls = 0
+            self.verifier_calls = 0
+
+        def call_generator(self, problem_text: str, lesson: str | None = None):
+            self.generator_calls += 1
+            return _Resp(content=f"<solution>candidate-{self.generator_calls}</solution>", reasoning_content="gen")
+
+        def call_verifier(self, problem_text: str, proof_text: str):
+            self.verifier_calls += 1
+            if self.verifier_calls == 1:
+                return (
+                    "<verdict>CRITICAL_FLAW</verdict>\n"
+                    "<verification>fatal issue</verification>\n"
+                    "<verified_lemmas>NONE</verified_lemmas>\n"
+                    "<citation_review>NONE</citation_review>",
+                    VerificationDecision.CRITICAL_FLAW,
+                    "fatal issue",
+                    [],
+                    "phase1",
+                )
+            return (
+                "<verdict>CORRECT</verdict>\n"
+                "<verification>fixed</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>",
+                VerificationDecision.CORRECT,
+                "",
+                [],
+                "phase1",
+            )
+
+        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+            return _Resp(content=previous_solution, reasoning_content="rev")
+
+        def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
+            return RunStatus.PARTIAL.value, "", current_solution, ""
+
+    runs_root = tmp_path / "runs"
+    pipeline = _CriticalPipeline()
+    orchestrator = Orchestrator(
+        max_turns=3,
+        pipeline=pipeline,
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-critical-route", problem_text="demo")
+
+    out = orchestrator.run(state)
+
+    assert out.status == RunStatus.SUCCESS
+    assert pipeline.generator_calls >= 2
