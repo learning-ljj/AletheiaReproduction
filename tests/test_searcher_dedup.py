@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from src.agents.base import BaseAgent
+from src.agents.searcher import SearcherAgent
+from src.memory.problem_memory import ProblemMemory
 
 
 class _Resp:
@@ -75,3 +79,70 @@ def test_base_agent_returns_final_text_without_tools() -> None:
     assert output == "plain-result"
     assert llm.chat_calls == 1
     assert llm.chat_with_tools_calls == 0
+
+
+def test_searcher_dedup_persists_unique_papers(tmp_path: Path) -> None:
+    def _source_a(query: str, limit: int) -> list[dict]:
+        return [
+            {
+                "title": "Paper with DOI",
+                "doi": "10.1000/demo-doi",
+                "abstract": "A",
+                "authors": ["Alice"],
+                "url": "https://example.org/doi",
+            },
+            {
+                "title": "Paper with DOI duplicate",
+                "doi": "10.1000/demo-doi",
+                "abstract": "A2",
+                "authors": ["Alice"],
+                "url": "https://example.org/doi-dup",
+            },
+            {
+                "title": "Paper with arXiv",
+                "arxiv_id": "2501.12345",
+                "abstract": "B",
+                "authors": ["Bob"],
+                "url": "https://arxiv.org/abs/2501.12345",
+            },
+        ]
+
+    def _source_b(query: str, limit: int) -> list[dict]:
+        return [
+            {
+                "title": "Paper with arXiv duplicate",
+                "arxiv_id": "2501.12345",
+                "abstract": "B2",
+                "authors": ["Bob"],
+                "url": "https://arxiv.org/abs/2501.12345v2",
+            },
+            {
+                "title": "Title only unique",
+                "abstract": "C",
+                "authors": ["Carol"],
+                "url": "https://example.org/title-only",
+            },
+            {
+                "title": "Title only unique",
+                "abstract": "C2",
+                "authors": ["Carol"],
+                "url": "https://example.org/title-only-dup",
+            },
+        ]
+
+    memory = ProblemMemory(problem_id="p-search", runs_root=tmp_path / "runs")
+    agent = SearcherAgent(
+        problem_memory=memory,
+        source_handlers={"source_a": _source_a, "source_b": _source_b},
+        limit_per_query=5,
+    )
+
+    result = agent.run(query="graph theory")
+    assert result["count"] == 3
+
+    paper_files = sorted(memory.papers_dir.glob("*.md"))
+    assert len(paper_files) == 3
+
+    second_result = agent.run(query="graph theory")
+    assert second_result["count"] == 3
+    assert len(list(memory.papers_dir.glob("*.md"))) == 3
