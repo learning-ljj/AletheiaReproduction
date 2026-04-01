@@ -68,6 +68,23 @@ def test_snapshot_problem_unknown_field() -> None:
     assert error["field"] == "ProblemSnapshot"
 
 
+def test_snapshot_problem_negative_iteration_value() -> None:
+    raw = {
+        "problem_id": "demo-problem",
+        "iteration_count": -1,
+        "status": "RUNNING",
+    }
+
+    try:
+        ProblemSnapshot.from_dict(raw)
+        assert False, "Expected StateValidationError"
+    except StateValidationError as exc:
+        error = exc.to_dict()
+
+    assert error["code"] == "invalid_field_value"
+    assert error["field"] == "iteration_count"
+
+
 def test_problem_memory_init_dirs(tmp_path: Path) -> None:
     memory = ProblemMemory(problem_id="p-001", runs_root=tmp_path / "runs")
     memory.init_dirs()

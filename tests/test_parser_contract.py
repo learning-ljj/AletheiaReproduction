@@ -86,3 +86,11 @@ def test_layer_reader_rejects_path_outside_runs_artifact(tmp_path: Path) -> None
     output = read_artifact_layer(str(outside_file), 1)
     payload = json.loads(output)
     assert payload["error"] == "PATH_NOT_ALLOWED"
+
+
+def test_parser_contract_empty_input_defaults() -> None:
+    parsed = parse_protocol_blocks("")
+    assert parsed["lemmas"] == []
+    assert parsed["verified_lemmas"] == []
+    assert parsed["citations"] == []
+    assert parsed["citation_review"] == ""
