@@ -30,12 +30,13 @@ class _SimpleFinalizer:
         partial: bool = False,
         assessment_output: str | None = None,
         preserve_xml: bool = False,
+        references: list[str] | None = None,
         warning_summary: str | None = None,
     ) -> str:
         status = "success" if success else ("partial" if partial else "failed")
         return (
             f"status={status};reason={failure_reason};solution={solution_text};"
-            f"assessment={assessment_output};warning={warning_summary}"
+            f"assessment={assessment_output};references={references};warning={warning_summary}"
         )
 
 

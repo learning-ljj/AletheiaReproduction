@@ -48,6 +48,7 @@ class _SimpleFinalizer:
         partial: bool = False,
         assessment_output: str | None = None,
         preserve_xml: bool = False,
+        references: list[str] | None = None,
         warning_summary: str | None = None,
     ) -> str:
         return "ok"

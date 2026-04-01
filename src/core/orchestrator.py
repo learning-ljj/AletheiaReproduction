@@ -13,6 +13,7 @@ from src.utils.parser import (
     parse_citation_review,
     parse_verified_lemmas,
 )
+from src.utils.reference_builder import build_references
 
 _logger = logging.getLogger(__name__)
 
@@ -68,10 +69,22 @@ class Orchestrator:
         )
         self.problem_memory.save_state(snapshot)
 
-    def _build_warning_summary(self) -> str | None:
-        if not self.warning_messages:
+    def _build_warning_summary(self, extra_warnings: list[str] | None = None) -> str | None:
+        warnings = list(self.warning_messages)
+        if extra_warnings:
+            warnings.extend(extra_warnings)
+        if not warnings:
             return None
-        return "\n".join(f"- {msg}" for msg in self.warning_messages)
+        return "\n".join(f"- {msg}" for msg in warnings)
+
+    def _build_references_from_solution(self, solution_text: str | None) -> tuple[str | None, list[str], list[str]]:
+        if self.problem_memory is None or not (solution_text or "").strip():
+            return solution_text, [], []
+        try:
+            converted, references, missing = build_references(solution_text or "", self.problem_memory)
+            return converted, references, missing
+        except Exception as exc:  # noqa: BLE001
+            return solution_text, [], [f"reference_builder_error: {type(exc).__name__}: {exc}"]
 
     def _save_artifact(self, state: ProofState) -> None:
         """保存终态 final_output 到 artifact 目录。"""
@@ -119,11 +132,13 @@ class Orchestrator:
         """统一失败收尾：设置状态并写 FINAL 事件。"""
         state.status = RunStatus.FAILED
         state.failure_reason = reason
+        converted_solution, references, reference_warnings = self._build_references_from_solution(state.current_proof)
         state.final_output = self.finalizer.build_final_output(
             success=False,
-            solution_text=None,
+            solution_text=converted_solution,
             failure_reason=reason,
-            warning_summary=self._build_warning_summary(),
+            references=references,
+            warning_summary=self._build_warning_summary(reference_warnings),
         )
         self._append_raw(state.problem_id, {
             "agent_node": "FINAL",
@@ -141,13 +156,15 @@ class Orchestrator:
         """统一成功收尾。"""
         state.status = RunStatus.SUCCESS
         state.failure_reason = None
+        converted_solution, references, reference_warnings = self._build_references_from_solution(state.current_proof)
         state.final_output = self.finalizer.build_final_output(
             success=True,
-            solution_text=state.current_proof,
+            solution_text=converted_solution,
             failure_reason=None,
-            warning_summary=self._build_warning_summary(),
+            references=references,
+            warning_summary=self._build_warning_summary(reference_warnings),
         )
-        state.final_answer = state.current_proof
+        state.final_answer = converted_solution
         self._append_raw(state.problem_id, {
             "agent_node": "FINAL",
             "turn_id": turn_id,
@@ -217,25 +234,27 @@ class Orchestrator:
             state.status = RunStatus.PARTIAL
             state.failure_reason = "max_turns_exhausted"
             state.final_answer = final_solution
+            converted_solution, references, reference_warnings = self._build_references_from_solution(state.current_proof)
             state.final_output = self.finalizer.build_final_output(
                 success=False,
-                solution_text=state.current_proof,
+                solution_text=converted_solution,
                 failure_reason=state.failure_reason,
                 partial=True,
                 assessment_output=final_xml_output,
-                preserve_xml=True,
-                warning_summary=self._build_warning_summary(),
+                references=references,
+                warning_summary=self._build_warning_summary(reference_warnings),
             )
         else:
             state.status = RunStatus.FAILED
             state.failure_reason = "beyond_capability"
+            converted_solution, references, reference_warnings = self._build_references_from_solution(state.current_proof)
             state.final_output = self.finalizer.build_final_output(
                 success=False,
-                solution_text=state.current_proof,
+                solution_text=converted_solution,
                 failure_reason=state.failure_reason,
                 assessment_output=final_xml_output,
-                preserve_xml=True,
-                warning_summary=self._build_warning_summary(),
+                references=references,
+                warning_summary=self._build_warning_summary(reference_warnings),
             )
 
         self._append_raw(state.problem_id, {

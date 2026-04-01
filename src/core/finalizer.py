@@ -11,6 +11,7 @@ def build_final_output(
     partial: bool = False,
     assessment_output: str | None = None,
     preserve_xml: bool = False,
+    references: list[str] | None = None,
     warning_summary: str | None = None,
 ) -> str:
     """构造最终输出文本。
@@ -46,7 +47,14 @@ def build_final_output(
         reason = (failure_reason or "unknown_reason").strip() or "unknown_reason"
         base_output = f"Admits failure: {reason}."
 
+    output = base_output.strip()
+
+    reference_items = references or []
+    if reference_items:
+        output = output + "\n\n## References\n" + "\n".join(reference_items)
+
     warning_text = (warning_summary or "").strip()
     if warning_text:
-        return (base_output + "\n\n## Citation Warnings\n" + warning_text).strip()
-    return base_output
+        output = output + "\n\n## Citation Warnings\n" + warning_text
+
+    return output.strip()

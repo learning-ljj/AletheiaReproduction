@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.core.finalizer import build_final_output
 from src.memory.problem_memory import ProblemMemory
 from src.utils.reference_builder import build_references
 
@@ -35,3 +36,19 @@ def test_reference_builder_numbering_and_missing_warning(tmp_path: Path) -> None
     assert references[0].startswith("[1] Alice; Bob. Demo Paper.")
     assert len(warnings) == 1
     assert "missing citation path" in warnings[0]
+
+
+def test_final_output_template_includes_references_and_warnings() -> None:
+    final_output = build_final_output(
+        success=True,
+        solution_text="Solved with citation [1].",
+        failure_reason=None,
+        references=["[1] Alice; Bob. Demo Paper. https://example.org/demo."],
+        warning_summary="- [2] missing citation path: artifact/papers/missing.md",
+    )
+
+    assert "Solved with citation [1]." in final_output
+    assert "## References" in final_output
+    assert "[1] Alice; Bob. Demo Paper." in final_output
+    assert "## Citation Warnings" in final_output
+    assert "missing citation path" in final_output
