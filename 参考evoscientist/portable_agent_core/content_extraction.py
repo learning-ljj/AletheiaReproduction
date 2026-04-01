@@ -6,6 +6,11 @@ This module keeps the same idea but makes the steps explicit:
 2. inspect MIME type,
 3. parse HTML or PDF,
 4. clean the output.
+
+中文说明：
+该模块实现了通用的内容抽取管道，负责从 URL 抓取原始响应，判断 MIME 类型，
+并将 HTML / PDF 转换为对模型友好的 Markdown 与纯文本，同时提供简单的
+自我修复（例如去掉 URL 参数）逻辑来提升鲁棒性。
 """
 
 from __future__ import annotations
@@ -25,30 +30,39 @@ class HtmlToTextParser(HTMLParser):
         # Initialize the stdlib parser first.
         super().__init__()
         # Accumulate text chunks in order.
+        # parts 列表按顺序累积文本片段，用于生成简单的纯文本输出。
         self.parts: list[str] = []
 
     def handle_data(self, data: str) -> None:
         # Keep only non-empty text fragments.
+        # 仅保留非空文本片段并去除首尾空白。
         if data.strip():
             self.parts.append(data.strip())
 
     def text(self) -> str:
         # Join with line breaks so paragraph boundaries stay readable.
+        # 以换行拼接，便于保持段落边界的可读性。
         return "\n".join(self.parts)
 
 
 @dataclass(slots=True)
 class FetchedResponse:
     # Raw bytes are needed for PDF parsing.
+    # Raw bytes：用于 PDF 解析器（按页提取文本）。
     content: bytes
     # Decoded text is needed for HTML parsing.
+    # 解码后的文本：用于 HTML 路径下的解析。
     text: str
     # Headers are normalized into a plain dictionary.
+    # 响应头字典，键通常小写化以便查找 content-type 等字段。
     headers: dict[str, str]
 
 
 class UniversalContentExtractor:
     """Extract model-friendly content from HTML or PDF URLs."""
+
+    # UniversalContentExtractor 提供 fetch + parse + validate 的完整流程，
+    # 并使用 resilience 模块的自我修正回路来处理常见失败。
 
     def __init__(
         self,
@@ -56,14 +70,17 @@ class UniversalContentExtractor:
         retry_policy: RetryPolicy | None = None,
     ) -> None:
         # HTTP timeout should stay explicit because extraction failures are common.
+        # HTTP 超时（秒），在网络或站点响应慢时避免长时间挂起。
         self._timeout_seconds = timeout_seconds
         # Reuse the same bounded retry policy style as the other modules.
+        # 重试策略复用 resilience 模块提供的 RetryPolicy。
         self._retry_policy = retry_policy or RetryPolicy()
 
     async def extract(self, source: str) -> ExtractedDocument:
         """Fetch a remote document, parse it, and return a normalized payload."""
 
-        # Step logic is isolated so the self-correction loop can rerun it.
+        # 将抓取 + 解析步骤封装为一个可重入的 step，以便 run_with_self_correction 在
+        # 校验失败时能传入修复后的输入并重试。
         async def _step(step_input: dict[str, str]) -> ExtractedDocument:
             # Fetch the raw response bytes first.
             response = await self._fetch(step_input["source"])
@@ -126,12 +143,12 @@ class UniversalContentExtractor:
 
         async def _operation() -> FetchedResponse:
             try:
-                # Prefer httpx when available because it has a cleaner async API.
+                # 优先使用 httpx，因为其 async API 更简洁且支持超时与重定向控制。
                 import httpx
 
                 # Open a short-lived client so the extractor remains self-contained.
                 async with httpx.AsyncClient(follow_redirects=True) as client:
-                    # Perform the GET request with the configured timeout.
+                    # 使用配置的超时执行 GET 请求。
                     response = await client.get(
                         source,
                         headers=headers,
@@ -148,6 +165,7 @@ class UniversalContentExtractor:
                 # Fall back to urllib so the demo still works in minimal environments.
                 from urllib.request import Request, urlopen
 
+                # 备用实现：在缺少 httpx 时使用标准库的 urllib，同样支持超时。
                 def _blocking_fetch() -> FetchedResponse:
                     request = Request(source, headers=headers)
                     with urlopen(request, timeout=self._timeout_seconds) as response:
@@ -213,7 +231,7 @@ class UniversalContentExtractor:
                 "PDF extraction requires the optional 'pypdf' package"
             ) from exc
 
-        # Wrap raw bytes in a file-like object for PdfReader.
+        # 将原始字节包装为 file-like 对象以供 PdfReader 使用。
         reader = PdfReader(io.BytesIO(content))
         # Pull text page by page to preserve natural order.
         page_texts = [page.extract_text() or "" for page in reader.pages]
@@ -243,6 +261,10 @@ def extract_title_from_html(html: str) -> str:
         return ""
     # Normalize whitespace because titles often contain line breaks.
     return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+# clean_markdown / clean_text 提供了一些保守的文本清理规则，目的是在把文本
+# 送入 LLM 前去除噪声（重复空行、导航条残留、表格间距等），而不是做深度格式化。
 
 
 def clean_markdown(markdown: str) -> str:

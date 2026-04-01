@@ -4,6 +4,11 @@ Key ideas borrowed from the source repository:
 1. Tool failures should become structured results instead of hard crashes.
 2. Retries should be explicit and bounded.
 3. Self-correction should be a loop with validation, not a blind retry.
+
+中文说明：
+该模块封装了常用的容错模式：有界重试、将异常转换为可序列化的结果对象、
+以及带有校验与修复策略的自我修正循环（self-correction），便于上层将错误
+视为可处理的状态而非直接崩溃。
 """
 
 from __future__ import annotations
@@ -16,12 +21,16 @@ from typing import Any, Awaitable, Callable
 @dataclass(slots=True)
 class RetryPolicy:
     # Max attempts includes the first try.
+    # 最大尝试次数（包含第一次尝试）。
     max_attempts: int = 3
     # Base delay is multiplied by the backoff factor after each failure.
+    # 基本延迟（秒），每次失败后按指数回退增长。
     base_delay_seconds: float = 0.5
     # Backoff factor controls exponential growth.
+    # 回退因子，用于计算下一次重试的等待时间。
     backoff_factor: float = 2.0
     # Allowed exception types keep retries selective.
+    # 可重试的异常类型元组，仅对这些异常进行重试以避免不必要的重试。
     retryable_exceptions: tuple[type[Exception], ...] = (
         TimeoutError,
         ConnectionError,
@@ -32,24 +41,32 @@ class RetryPolicy:
 @dataclass(slots=True)
 class ToolExecutionResult:
     # Tool or step name.
+    # 名称：对应工具或步骤的标识。
     name: str
     # Success is false when an exception was caught.
+    # success 标志表示操作是否成功（False 表示捕获到异常或质量校验失败）。
     success: bool
     # Content is the model-friendly message or normal result body.
+    # content：供模型或界面显示的友好文本，可以是结果或错误说明。
     content: str
     # Raw value is preserved for callers that need structured access.
+    # value：原始返回值，供需要结构化数据的调用方使用。
     value: Any = None
     # Attempts help debugging flaky providers.
+    # attempts：尝试次数统计，便于调试波动性提供者。
     attempts: int = 1
     # Error text is separate from content for programmatic use.
+    # error：程序化错误文本（通常是 exception 的字符串形式）。
     error: str = ""
 
 
 @dataclass(slots=True)
 class ValidationIssue:
     # Short machine-friendly code such as "empty_results".
+    # code：简短的机器可识别错误码，例如 "empty_results"。
     code: str
     # Human-friendly explanation.
+    # message：面向人的错误解释，用于日志或展示。
     message: str
 
 

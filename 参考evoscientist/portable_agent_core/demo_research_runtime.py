@@ -5,6 +5,11 @@ Run with:
 
 This demo uses a static search provider so it can run without network access.
 Swap StaticSearchProvider for TavilySearchProvider in real usage.
+
+中文说明：
+这是一个最小可运行示例，展示如何组装 `agent_framework`、检索与抽取子 agent，
+以及主策略（ResearchCoordinatorStrategy）如何按轮次委派并合并子 agent 的报告。
+示例使用静态搜索结果以便离线运行和复现。
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ _TASK_COUNTER = count(1)
 def new_task_id() -> str:
     # Return ids such as "task-1", "task-2", and so on.
     return f"task-{next(_TASK_COUNTER)}"
+    # new_task_id 用于生成稳定且可追踪的任务 id，便于在事件流中定位任务。
 
 
 class LiteratureSearchSubAgent:
@@ -77,6 +83,8 @@ class LiteratureSearchSubAgent:
             citations=citations_from_bundle(bundle),
             artifacts=[],
         )
+    # 该子 agent 的 run 方法演示了如何把服务返回的 SearchBundle 转成 SubAgentReport，
+    # 包含可供主 agent 程序化使用的 structured_output 以及可供展示的 summary。
 
 
 class ContentExtractionSubAgent:
@@ -137,6 +145,8 @@ class ContentExtractionSubAgent:
             citations=[],
             artifacts=[],
         )
+    # 该子 agent 演示了从 URL 列表中抽取内容、做容错（异常捕获）并
+    # 将结果归一化为字典列表，供主 agent 汇总使用。
 
 
 @dataclass(slots=True)
@@ -186,6 +196,8 @@ class ResearchCoordinatorStrategy:
             ),
             citations=reports["literature_search"].citations,
         )
+    # 这是一个非常小的主策略示例：按顺序完成两个阶段（检索 -> 抽取），
+    # 并最终把子报告合并为最终答案。真实场景下主策略会更复杂。
 
 
 def build_search_summary(bundle: SearchBundle) -> str:
@@ -194,6 +206,7 @@ def build_search_summary(bundle: SearchBundle) -> str:
     for hit in bundle.hits[:3]:
         lines.append(f"- {hit.title} | {hit.url}")
     return "\n".join(lines)
+    # 该函数生成简短的检索摘要，供主 agent 在下一阶段或输出中使用。
 
 
 def build_extraction_summary(documents: list[dict[str, Any]]) -> str:
@@ -203,6 +216,7 @@ def build_extraction_summary(documents: list[dict[str, Any]]) -> str:
         preview = str(doc.get("text", "") or doc.get("markdown", ""))[:220]
         lines.append(f"- {doc.get('source', '')}: {preview}")
     return "\n".join(lines)
+    # 将抽取到的文档做简要预览，便于主 agent 快速读取要点。
 
 
 def build_final_answer(
@@ -225,6 +239,8 @@ def build_final_answer(
         "both structured reports into one answer."
     )
     return "\n".join(lines)
+    # build_final_answer 把子 agent 的摘要直接拼接成最终可读回答，在真实系统中
+    # 主 agent 可能会在此基础上进行更复杂的归纳或生成。
 
 
 async def main() -> None:

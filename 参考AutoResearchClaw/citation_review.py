@@ -7,6 +7,11 @@ Core ideas preserved from the original repo:
 4. Allow optional topic relevance scoring without coupling to one LLM client.
 """
 
+# 中文说明：
+# - 按 DOI -> OpenAlex -> arXiv -> 标题 的顺序尽可能保守地核验 BibTeX 条目；
+# - 使用本地缓存减少重复调用；
+# - 暴露钩子用于按主题打分（可接入任意模型），但本模块不依赖具体 LLM SDK。
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,18 +30,23 @@ from docs.analysis.migration_core.stable_literature_search import SearchConfig, 
 
 
 # Keep verification cache outside repo-specific directories.
+# 本地验证缓存目录，存放每次条目的核验结果以供重复运行时复用。
 CACHE_ROOT = Path(".migration_cache") / "citation_verify"
 
 # The full-stage timeout mirrors the original repo's defensive behavior.
+# 全局超时（秒），超过该时间后剩余条目将被标记为跳过，避免长时间等待外部 API。
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
 # Verification cache does not need minute-level freshness.
+# 验证缓存的有效期，较长时间内认为验证结果仍然可信以减少重复查询。
 CACHE_TTL = timedelta(days=7)
 
 
 @dataclass(slots=True)
 class BibEntry:
     """A minimal BibTeX entry representation suitable for verification."""
+
+# 表示从 .bib 文本解析出的最小化条目结构（包含原始文本与字段字典），用于逐条验证。
 
     key: str
     entry_type: str
@@ -110,10 +120,13 @@ def verification_cache_put(result: CitationResult) -> None:
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+# 以上三个函数负责把单条核验的结果持久化到磁盘并按 TTL 复用，避免重复访问第三方 API。
+
 
 def parse_bibtex_entries(bib_text: str) -> list[BibEntry]:
     """Parse BibTeX with a regex-first approach that is easy to migrate."""
     # 先找到每个条目的头部位置，后面再切 raw_text。
+    # 中文说明：采用正则解析以保持实现轻量、依赖少；对复杂或非标准的 .bib 可能不完美。
     matches = list(re.finditer(r"@(\w+)\s*\{\s*([^,]+),", bib_text))
     entries: list[BibEntry] = []
     for index, match in enumerate(matches):
@@ -139,6 +152,7 @@ def parse_bibtex_entries(bib_text: str) -> list[BibEntry]:
 
 def title_similarity(left: str, right: str) -> float:
     """Compute a light-weight similarity score without third-party libraries."""
+    # 轻量的标题相似度：基于词元重叠比例计算，不使用外部依赖以保证可迁移性。
     left_tokens = set(normalize_text(left).split())
     right_tokens = set(normalize_text(right).split())
     if not left_tokens or not right_tokens:
@@ -149,6 +163,7 @@ def title_similarity(left: str, right: str) -> float:
 
 def request_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
     """Fetch JSON with small retry logic for transient network errors."""
+    # 简单的 HTTP JSON 请求封装：做少量重试并对 404/429/5xx 做特殊处理。
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -174,6 +189,7 @@ def request_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
 
 def verify_by_doi(doi: str, title: str) -> CitationResult | None:
     """Verify by DOI first because it is the most precise identifier."""
+    # 使用 DOI 进行核验：优先调用 Crossref / DataCite 等权威注册表获取条目信息并比对标题相似度。
     normalized_doi = doi.strip().lower()
     if not normalized_doi:
         return None
@@ -211,6 +227,7 @@ def verify_by_doi(doi: str, title: str) -> CitationResult | None:
 
 def verify_by_openalex(title: str) -> CitationResult | None:
     """Verify by OpenAlex title search because coverage is broad and stable."""
+    # 使用 OpenAlex 的标题搜索作为广覆盖且较稳定的兜底方式，返回高/中置信度的匹配。
     if not title.strip():
         return None
     params = parse.urlencode({"search": title, "per-page": "5"})
@@ -255,6 +272,7 @@ def verify_by_openalex(title: str) -> CitationResult | None:
 
 def verify_by_arxiv_id(arxiv_id: str, title: str) -> CitationResult | None:
     """Verify by arXiv id when the BibTeX entry contains one."""
+    # 当 BibTeX 包含 arXiv id 时，直接解析 arXiv 条目并比对标题，这通常非常精确。
     if not arxiv_id.strip():
         return None
     params = parse.urlencode({"id_list": arxiv_id.strip()})
@@ -280,6 +298,7 @@ def verify_by_arxiv_id(arxiv_id: str, title: str) -> CitationResult | None:
 
 def verify_by_title_search(title: str, semantic_scholar_api_key: str | None) -> CitationResult | None:
     """Final fallback: search by title using the standalone search module."""
+    # 最后的回退：用标题作为查询去检索（semantic_scholar / openalex / arxiv），取最相似的结果判断可信度。
     config = SearchConfig(
         sources=["semantic_scholar", "openalex", "arxiv"],
         limit_per_query=3,
@@ -312,6 +331,7 @@ def verify_by_title_search(title: str, semantic_scholar_api_key: str | None) -> 
 
 def verify_one_entry(entry: BibEntry, semantic_scholar_api_key: str | None) -> CitationResult:
     """Verify one BibTeX entry using the repo's preferred source order."""
+    # 按优先级依次尝试：DOI -> OpenAlex -> arXiv -> 标题搜索；遇到高置信度结果则立即返回。
     title = entry.fields.get("title", "").strip()
     doi = entry.fields.get("doi", "").strip()
     arxiv_id = entry.fields.get("eprint", "").strip() or entry.fields.get("arxiv", "").strip()
@@ -360,6 +380,7 @@ def verify_citations(
     relevance_scorer: Callable[[str, list[CitationResult]], dict[str, float]] | None = None,
 ) -> VerificationReport:
     """Verify all citations and optionally apply a topic relevance scoring layer."""
+    # 主入口：逐条验证 BibTeX 条目，支持全局超时、缓存复用和可选的主题相关性打分回调。
     started_at = time.time()
     entries = parse_bibtex_entries(bib_text)
     results: list[CitationResult] = []
@@ -403,6 +424,7 @@ def verify_citations(
 
 def filter_verified_bibtex(bib_text: str, report: VerificationReport, include_suspicious: bool = True) -> str:
     """Keep only entries that survived verification."""
+    # 根据验证报告筛选 .bib 条目，可选择保留 suspicious（人工复核）条目。
     keep_statuses = {CitationStatus.VERIFIED, CitationStatus.SKIPPED}
     if include_suspicious:
         keep_statuses.add(CitationStatus.SUSPICIOUS)
@@ -414,6 +436,7 @@ def filter_verified_bibtex(bib_text: str, report: VerificationReport, include_su
 
 def remove_bibtex_entries(bib_text: str, keys_to_remove: set[str]) -> str:
     """Remove specific BibTeX entries by key."""
+    # 按 key 从 .bib 文本中移除指定条目（用于清理或临时删除）。
     entries = parse_bibtex_entries(bib_text)
     kept = [entry.raw_text for entry in entries if entry.key not in keys_to_remove]
     return "\n\n".join(kept) + ("\n" if kept else "")
@@ -421,6 +444,7 @@ def remove_bibtex_entries(bib_text: str, keys_to_remove: set[str]) -> str:
 
 def prune_uncited_bib_entries(bib_text: str, paper_markdown: str) -> str:
     """Drop BibTeX entries that are never cited in the paper draft."""
+    # 仅保留在正文中出现过的 cite key，避免 bibliography 中存在未引用的条目。
     cited_keys = set(re.findall(r"\[([A-Za-z0-9:_-]+)\]", paper_markdown))
     entries = parse_bibtex_entries(bib_text)
     kept = [entry.raw_text for entry in entries if entry.key in cited_keys]
@@ -429,6 +453,7 @@ def prune_uncited_bib_entries(bib_text: str, paper_markdown: str) -> str:
 
 def annotate_paper_hallucinations(paper_markdown: str, report: VerificationReport, low_relevance_keys: set[str] | None = None) -> str:
     """Remove hallucinated or low-relevance cite keys from a markdown draft."""
+    # 从论文草稿中删除被判定为幻觉的引用（或低相关性的引用），仅做最小修改。
     low_relevance_keys = low_relevance_keys or set()
     bad_keys = {
         item.key

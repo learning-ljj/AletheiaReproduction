@@ -1,23 +1,29 @@
-# ResearchMathAgent 架构重构与 MVP 设计文档
+# AletheiaReproduction 架构重构设计（MVP v1）
 
-## 0. 文档目的
+## 0. 适用范围与目标
 
-这份文档做两件事：
+这份文档是给“当前仓库可直接落地”的重构方案，不追求一步到位做成完整多智能体平台，而是先做一个稳定、可运行、可扩展、可复现的最小可行版本（MVP）。
 
-1. 先用大白话把你要做的重构讲清楚（做什么、为什么做、先后顺序是什么）。
-2. 再给出一个可以直接落地的 MVP 架构方案（目录、模块、数据流、配置、依赖、代码改造点）。
-
-目标不是一步到位做成“完美多智能体”，而是先把你当前的单向流水线，重构到一个可运行、可扩展、可复现的最小可行版本。
+本方案完全基于当前代码现状梳理，核心代码参考：
+- [src/core/orchestrator.py](src/core/orchestrator.py#L12)
+- [src/core/pipeline.py](src/core/pipeline.py)
+- [src/core/state.py](src/core/state.py#L42)
+- [src/models/llm_client.py](src/models/llm_client.py#L16)
+- [src/tools/registry.py](src/tools/registry.py)
 
 ---
 
-## 1. 先讲人话：这次重构到底要做什么
+## 1. 生成正式文档前的前置分析（先讲大白话）
 
-你现在的系统本质是：
+### 1.1 先说结论：你现在系统的真实形态
 
-- 一个调度器按固定顺序调用函数。
-- 只有 Verifier 能用工具。
-- 所有状态都堆在一个 history 里，属于“流水账”。
+你现在的系统可以理解成：
+1. 一个固定流程的总控器（Orchestrator）。
+2. 三个“函数节点”按顺序跑（Generator -> Verifier -> Reviser/Generator）。
+3. Verifier 有工具能力，Generator/Reviser 几乎没有工具能力。
+4. 状态以内存对象为主，文件日志主要在 data/logs 下，尚未形成“每题一个记忆目录”的结构。所有状态都堆在一个 history 里，属于“流水账”。
+
+所以它目前更像“有迭代的单智能体流水线”。
 
 你要变成的是：
 
@@ -27,580 +33,811 @@
 - 引理和论文都分层存储，按需读取，不把长文本一次性塞给模型。
 
 一句话总结：
-从“函数流水线”升级为“Agent 协作 + 问题级记忆 + 分层知识加载”的可扩展框架。
+从“函数流水线”升级为“多Agent 协作 + 问题级记忆 + 分层知识加载”的可扩展框架。
+
+### 1.2 实现你这个需求，最核心的模块有哪些
+
+1. Orchestrator（总调度）
+- 作用：只做流程推进，不做数学推理。
+- 要做的事：创建 ProblemMemory、调用各 Agent、解析 verifier 输出、执行路由、落盘状态。
+
+2. ProblemMemory（每题记忆中枢）
+- 作用：每道题一个实例，统一管理 state.json、history.jsonl、artifact 文件（lemmas、papers、errors、citations），提供artifact 文件分层读取接口（只读第一层摘要、第二层正文、第三层来源）。
+- 要做的事：保存 ProofState、保存引理、保存论文摘要与正文、保存错误报告。
+
+3. GeneratorAgent（提出解题方案与引理）
+- 作用：先产出结构化 solution，必须把候选引理写在 solution 前面，且用 lemma 标签块标出来。如果引用artifact中的知识，必须写 cite:文件路径。
+- 要做的事：允许多轮工具调用；强制输出 cite 路径。
+
+4. VerifierAgent（严审与分流）
+- 作用：验证整份解答和其中 lemma，不负责补证明，引理没有完整证明就拒绝通过。把验证通过的引理放进 verified_lemmas 标签，交给 Orchestrator 入库。给出路由级别的结论（CORRECT/MINOR_FLAW/CRITICAL_FLAW）。
+- 作用（新增）：当解答存在 cite 引用时，按需调用 CitationReviewer 子 Agent 做引用审查（路径存在性 + 引用内容正确性 + 元信息一致性）。
+- 要做的事：输出 verdict、verification、verified_lemmas、citation_review；把可入库引理完整拷贝出来。
+
+5. ReviserAgent（定点修补）
+- 作用：按 verifier 报告修补，不要整篇重写。
+- 要做的事：保留正确段落，只修有问题位置。
+
+6. Searcher 子 Agent（文献助手）
+- 作用：被 Generator 按需调用，做文献检索、清洗、提取、去重。
+- 要做的事：把论文按三层结构写入 artifact/papers。
+
+7. CitationReviewer 子 Agent（引用审查助手）
+- 作用：被 Verifier 按需调用，逐条审查 [cite:路径] 的真实性与对应关系。
+- 要做的事：输出逐条审查结果（通过/失败、证据、置信度、建议动作），回传给 Verifier 汇总成 citation_review。
+
+8. Parser + Finalizer（协议解析与最终出稿）
+- 作用：解析标签、提取 cite、把 cite 路径替换成标准引用编号，构造最终输出文件。
+- 要做的事：构造 References 和可导出的 BibTeX，输出最终文档。
+
+### 1.3 各模块核心工作流程（MVP）
+
+1. main.py 接到题目，生成 run_id。
+2. Orchestrator 初始化 ProblemMemory（按 problem_id 创建目录）。
+3. Orchestrator 读取 ProblemMemory 的摘要（层1）拼进 Generator 输入。
+4. Generator 进入工具循环；需要外部知识时调用 Searcher 子 Agent，执行“查询扩展 -> 多源检索 -> 去重排序 -> 逐篇 PDF 抽取 -> 分段摘要 -> 候选 claim 萃取”，并把论文三层内容写入 artifact/papers。
+5. Generator 输出 solution（solution 开头含多个 lemma，正文中有 cite 路径）。
+6. Reviser 按 verifier 报告修补，不进行整篇重写。
+7. Verifier 验证整体与 lemma；若检测到 cite，则在 Verifier 内部调用 CitationReviewer 子 Agent 做引用审查。
+8. Verifier 输出 verdict + verification + verified_lemmas + citation_review。
+9. Orchestrator 解析 verified_lemmas，调用 ProblemMemory.add_lemma() 落盘。
+10. 路由：
+- CORRECT -> FINAL
+- MINOR_FLAW -> REVISER
+- CRITICAL_FLAW -> GENERATOR
+11. FINAL 阶段把 artifact 文件中的 cite 路径替换为 [1][2]，自动生成 References，并附加 Verifier 给出的 citation_review 摘要。
+
+### 1.4 显式需求与隐式需求
+
+显式需求（你在 idea.md 中已经明确）：
+1. ProofState 升级为 ProblemMemory 体系，按题隔离。
+2. Generator/Reviser/Verifier 重构为有状态 Agent。
+3. Generator 必须输出 lemma 标签；Verifier 必须输出 verified_lemmas。
+4. 三层分层暴露（frontmatter 摘要、正文、来源元信息）。
+5. Searcher 为独立子 Agent，负责去重与论文落盘。
+6. 引用必须写 [cite:路径]，最终输出 References。
+
+隐式需求（不做会反复踩坑）：
+1. 输出协议必须统一，否则 parser 会频繁失败。
+2. 文件写入需要原子性和路径安全检查，否则易出现损坏和越界读取。
+3. 每个 Agent 需要 max_tool_rounds，防止工具死循环。
+4. 状态要可恢复（state.json + history.jsonl）。
+5. 提示词必须版本化，否则同代码不同结果不可对比。
+
+### 1.5 当前代码中的高优先级风险（建议先修）
+
+1. 日志与目标目录结构不一致
+- 当前 raw 事件写入 [src/utils/logger.py](src/utils/logger.py#L11) 指向 data/logs。
+- 目标方案要求每题 runs/{problem_id}/history.jsonl。
+- 建议：通过 ProblemMemory 统一落盘，不再让 Orchestrator 直接依赖 data/logs。
+
+1. parser 目前只支持单标签提取
+- [src/utils/parser.py](src/utils/parser.py#L8) 的 extract_xml_tag 只取首个标签块。
+- 目标方案需要多个 lemma、多个 cite、verified_lemmas。
+- 建议：增加 extract_xml_tags 与结构化解析函数。
+
+### 1.6 三项目参考点是如何实现的（代码级拆解 + 迁移结论）
+
+这部分对应你在 三项目参考点.md 中列出的“可借鉴点”，并明确“当前架构怎么接进去”。
+
+#### 1.6.1 EvoScientist 的可借鉴点与实现方式
+
+1. 主 Agent 调工具/技能/子代理的决策流程
+- 实现位置：参考evoscientist/portable_agent_core/agent_framework.py。
+- 关键机制：AgentRuntime.run() 以 strategy.next_action() 驱动循环，动作分为调用工具、委派子代理、结束；每步都会发 RunEvent 到 event sink。
+- 如何搬到本项目：
+  1. 在 src/agents/base.py 定义统一动作对象（Action）和回合事件对象（RunEvent）。
+  2. 在 src/core/orchestrator.py 中只保留“阶段路由”，把“阶段内部动作决策”放回各 Agent。
+  3. 在 src/utils/logging/logger.py 统一落盘事件，形成可回放轨迹。
+- 注意事项：Orchestrator 只做跨阶段控制，不要把 Agent 内部中间推理塞回全局状态。
+- 易犯错点：
+  1. 让 Orchestrator 同时管理“阶段路由 + 工具调用细节”，导致职责回退到单体大函数。
+  2. RunEvent 直接写入大段原文，造成 history 膨胀和回放困难。
+
+2. 容错机制和自我修正
+- 实现位置：参考evoscientist/portable_agent_core/resilience.py。
+- 关键机制：retry_async（有界重试）、guarded_tool_call（工具异常保护）、run_with_self_correction（验证失败后自修正再执行）。
+- 如何搬到本项目：
+  1. 在 src/models/llm_client.py 增加统一重试策略（网络错误、429、超时）。
+  2. 在 src/tools/registry.py 为工具执行增加 guarded wrapper，返回结构化错误而非抛异常中断。
+  3. 在 Verifier/Generator 的结构化输出解析失败时触发一次“格式修复重试”。
+- 注意事项：有副作用的工具（写文件、执行代码）必须做幂等保护，避免重试造成重复写入。
+- 易犯错点：
+  1. 无差别重试所有异常，导致逻辑错误被掩盖。
+  2. 自修正回路未设置上限，引发隐性死循环。
+
+3. 低耦合状态协议
+- 实现位置：参考evoscientist/portable_agent_core/shared_types.py。
+- 关键机制：AgentTask/SubAgentReport 等 DTO，把“运行时行为”和“领域对象”分离。
+- 如何搬到本项目：
+  1. src/memory/state.py 只承载领域状态（problem/workflow/task）。
+  2. src/agents/* 使用独立的运行时 DTO（Action、ToolResult、SubAgentReport）。
+  3. Parser 只解析协议字段，不直接写业务状态。
+- 注意事项：DTO 版本要显式管理（如 schema_version），否则后续兼容会失控。
+- 易犯错点：把 ProblemMemory 直接当消息总线使用，导致状态模型被瞬时字段污染。
+
+#### 1.6.2 AutoResearchClaw 的可借鉴点与实现方式
+
+1. 文献检索的完整链路
+- 实现位置：参考AutoResearchClaw/stable_literature_search.py。
+- 关键机制：expand_queries -> 多源请求 -> 重试与限流兜底 -> deduplicate_papers。
+- 如何搬到本项目：
+  1. 在 src/agents/searcher.py 固定执行全量链路：查询扩展、多源检索、去重重排、逐篇 PDF 抽取、候选 claim 萃取。
+  2. 在 src/tools/search.py 暴露给 Generator 的工具桥接接口，输入 query_bundle，输出标准 paper 结构。
+  3. 将 Layer1/Layer2/Layer3 一次性写入 artifact/papers，避免后续回填字段不一致。
+- 注意事项：去重键顺序建议 DOI > arXiv ID > normalized title，且保留原始来源列表便于追溯。
+- 易犯错点：
+  1. 只按标题去重，误合并同名不同论文。
+  2. 查询扩展过度导致召回噪声激增，反而稀释关键信息。
+
+2. 引文真实性核验
+- 实现位置：参考AutoResearchClaw/citation_review.py。
+- 关键机制：verify_one_entry 采用 DOI -> OpenAlex -> arXiv -> title fallback 的级联验证；verify_citations 汇总核验结果并标注疑似幻引。
+- 如何搬到本项目：
+  1. 将核验能力做成 CitationReviewer 子 Agent（src/agents/citation_reviewer.py）。
+  2. 在 src/agents/verifier.py 中仅在检测到 cite 时按需调用该子 Agent（类似 Generator 调 Searcher）。
+  3. Verifier 汇总输出 citation_review（通过率、失败项、证据链、建议路由），Orchestrator 仅消费结果不直接执行核验。
+- 注意事项：要同时检查“路径存在”与“引用断言是否被来源内容支撑”，不能只做文件存在性检查。
+- 易犯错点：
+  1. 只校验 cite 路径存在，不校验段落结论与来源内容的一致性。
+  2. 把引用核验写进 Orchestrator，导致调度层职责膨胀。
+
+3. 写作产物集中打包
+- 实现位置：参考AutoResearchClaw/latex_pipeline.py 与 deliverables 约定。
+- 关键机制：Markdown -> LaTeX -> 编译 -> 错误解析；最终集中导出论文、BibTeX、验证报告和清洗报告。
+- 如何搬到本项目：
+  1. MVP 先不强制 LaTeX 编译，但在 Finalizer 增加 manifest.json 汇总（solution、references、citation_review、errors）。
+  2. 将引用与验证产物统一放在 runs/{problem_id}/artifact 下，路径固定。
+- 注意事项：manifest 需要可机器读取，字段命名不要依赖自然语言。
+- 易犯错点：把“展示文本”和“程序消费字段”混在一个文件，导致后续自动评测难以解析。
+
+#### 1.6.3 ResearchClaw 的可借鉴点与实现方式
+
+1. 状态对象化
+- 实现位置：参考ResearchClaw/research_workflow_engine.py。
+- 关键机制：ResearchProject/ResearchWorkflow/WorkflowTask/ResearchClaim/ResearchEvidence 等 dataclass + JsonStateStore。
+- 如何搬到本项目：
+  1. 在 src/memory/state.py 定义最小 typed state（ProblemState、StageState、TaskState）。
+  2. 在 src/memory/problem_memory.py 实现单文件快照 + 原子写入 + 回读校验。
+  3. 在 Orchestrator 每轮写入“状态快照 + 事件增量”。
+- 注意事项：MVP 只引入最小必需字段，避免一开始引入过宽 schema。
+- 易犯错点：
+  1. 先设计过深对象图，导致开发早期大量字段长期为空。
+  2. ID 规则不统一，后续 claim/evidence 无法可靠关联。
+
+2. 状态随流程推进的管理思路
+- 实现位置：参考ResearchClaw/research_workflow_engine.py 中 _recompute_workflow()、tick_workflow()、dashboard()。
+- 关键机制：根据 task 状态重算 stage 状态，支持 blocked/running/completed。
+- 如何搬到本项目：
+  1. 保留当前主循环，新增 lightweight stage 重算函数（不引入完整图引擎）。
+  2. 每轮依据 Verifier verdict 更新 stage 状态并写入 state.json。
+  3. 提供最小 dashboard 视图用于调试（当前阶段、阻塞原因、最近错误）。
+- 注意事项：状态重算必须“单一事实来源”，避免 stage 与 task 双向覆盖。
+- 易犯错点：手动修改 stage 状态而不重算 task，造成状态漂移。
+
+3. 文献到 claim/evidence 的结构化落盘
+- 实现位置：record_literature_search()、record_paper_summary()。
+- 关键机制：文献短名单、论文摘要、claim/evidence 关联对象一并写入状态。
+- 如何搬到本项目：
+  1. MVP 阶段将 claim/evidence 作为可选视图（claim_graph.json），不阻塞主流程。
+  2. 仅对“Verifier 通过或部分通过”的条目生成 claim/evidence，降低噪声。
+- 注意事项：claim 必须带来源路径与段落证据，避免不可追溯断言。
+- 易犯错点：把未经验证的生成内容直接写入 claim 图，导致图谱污染。
 
 ---
 
-## 2. 核心模块（大白话版）
+## 2. 你可能不熟悉的高级 Python 特性/第三方库（一行版）
 
-### 2.1 Orchestrator（总调度）
+按照你要求的格式：库/语言特性：一句话说明在本项目中的作用（并给出典型使用场景或代码片段链接）。
 
-作用：
-
-- 决定这一步该叫谁干活（Generator、Verifier、Reviser）。
-- 解析 Verifier 输出里的标签（尤其是 verified_lemmas）。
-- 把中间结果写进 ProblemMemory。
-
-它像“项目经理”，不做数学推理，只做流程与状态推进。
-
-### 2.2 Generator Agent（出方案的人）
-
-作用：
-
-- 先产出结构化 solution。
-- 必须把候选引理写在 solution 前面，且用 lemma 标签块标出来。
-- 如果引用外部知识，必须写 cite:文件路径。
-
-它不是“只会胡思乱想的函数”，而是可多轮工具调用的 Agent。
-
-### 2.3 Verifier Agent（审稿人）
-
-作用：
-
-- 验证整份解答，并优先审查引理。
-- 引理没有完整证明就拒绝通过。
-- 把验证通过的引理放进 verified_lemmas 标签，交给 Orchestrator 入库。
-- 给出路由级别的结论（CORRECT/MINOR_FLAW/CRITICAL_FLAW）。
-
-它是质量闸门，不负责替 Generator 补证明。
-
-### 2.4 Reviser Agent（修订人）
-
-作用：
-
-- 只根据 verifier report 修补当前解答。
-- 不重写整份答案，尽量保留正确部分。
-
-它是“补洞”角色，不是“重开一题”。
-
-### 2.5 ProblemMemory（每题记忆中枢）
-
-作用：
-
-- 保存当前题目的 ProofState 关键字段。
-- 维护历史事件 history.jsonl。
-- 管理 artifact 目录：lemmas、papers、errors、citations。
-- 提供分层读取接口（只读第一层摘要、第二层正文、第三层来源）。
-
-它是每题一个实例，不是全局跨题单例。
-
-### 2.6 Searcher 子 Agent（文献助手）
-
-作用：
-
-- 被 Generator 按需调用。
-- 检索和清洗论文，按三层结构写入 papers 目录。
-- 做去重（避免重复抓同一篇）。
-
-它是“工具形态的子 Agent”，生命周期由 Generator 单次阶段触发。
+1. dataclasses：用轻量结构体承载模型返回对象，减少样板代码并提升可读性（场景：[src/models/llm_client.py](src/models/llm_client.py#L16)）。
+2. pydantic：给状态模型做运行时强校验，防止字段错类型导致脏数据（场景：[src/core/state.py](src/core/state.py#L42)）。
+3. typing 联合类型（如 str | None）：把接口约束写清楚，降低函数调用误用（场景：[src/core/orchestrator.py](src/core/orchestrator.py)）。
+4. OpenAI Function Calling：让工具调用变成结构化函数路由，便于审计和扩展（场景：[src/models/llm_client.py](src/models/llm_client.py#L224)）。
+5. subprocess：把 run_python 放进子进程隔离执行，降低主进程被污染风险（场景：[src/tools/code_executor.py](src/tools/code_executor.py#L13)）。
+6. threading + join 超时：给离线摘要调用加硬超时，避免工作日志构建卡死（场景：[src/utils/worklog_builder.py](src/utils/worklog_builder.py#L116)）。
+7. pathlib：统一路径拼接和跨平台目录管理，减少 Windows/Linux 差异问题（场景：[src/utils/logger.py](src/utils/logger.py#L11)）。
+8. yaml 配置替换环境变量：把密钥和模型参数从代码中剥离，便于复现实验（场景：[src/core/config.py](src/core/config.py#L8)）。
+9. tenacity（建议新增）：把 LLM/网络重试策略标准化，替代分散手写重试逻辑（建议场景：重构 [src/models/llm_client.py](src/models/llm_client.py)）。
+10. contextvars（建议新增）：实现“同题共享、跨题隔离”的 ProblemMemory 上下文传递（建议场景：新增 src/memory/problem_memory.py）。
 
 ---
 
-## 3. 核心流程（一步步）
+## 3. MVP 架构设计文档（正式版）
 
-1. Orchestrator 接到题目，创建 ProblemMemory(problem_id)。
-2. ProblemMemory 初始化目录、state.json、history.jsonl。
-3. Orchestrator 从 ProblemMemory 拉取摘要上下文（引理摘要、论文摘要、历史错误摘要），喂给 Generator。
-4. Generator 运行 ReAct 循环，必要时调用 Searcher 或读取分层文件，输出 solution（含多个 lemma 块）。
-5. Orchestrator 记录事件到 history.jsonl。
-6. Verifier 对整份 solution 做验证，同时重点处理 lemma：
-   - 有完整证明且通过：写入 verified_lemmas。
-   - 无完整证明或失败：进入 error report。
-7. Orchestrator 解析 verified_lemmas，调用 ProblemMemory.add_lemma 落盘。
-8. 根据 Verifier 裁决路由：
-   - CORRECT 结束。
-   - MINOR_FLAW 交 Reviser。
-   - CRITICAL_FLAW 交 Generator。
-9. 达到 max_turns 后走 Final 模块，生成最终输出与 References。
+### 3.1 设计目标与非目标
 
----
+目标：
+1. 保持现有主流程可运行。
+2. 在最小改动下引入 ProblemMemory 与 Agent 对象化。
+3. 支持引理入库、文献分层、引用追踪。
+4. 保证可复现（状态、日志、配置、模型版本都可追踪）。
 
-## 4. 显式需求与隐式需求拆解
+非目标（MVP 先不做）：
+1. 跨题共享知识库。
+2. 多进程并发调度器。
+3. 完整数据库（Redis/SQLite）持久化。
 
-### 4.1 显式需求（你已经明确提出）
+### 3.2 核心模块划分（按功能域）
 
-- ProofState 升级为 ProblemMemory 体系。
-- 三个节点函数重构成 Agent 对象，具备阶段内短期记忆。
-- Generator 输出中必须有 lemma 标签；Verifier 输出 verified_lemmas。
-- artifact 分层存储，ProblemMemory 只持有摘要。
-- Searcher 作为子 Agent，由 Generator 调用并去重。
-- 引用追踪要求 cite:文件路径，最终输出 References 与 BibTeX。
+1. 数据加载
+- 负责读取题目与 benchmark。
+- 现有文件：[src/utils/data_loader.py](src/utils/data_loader.py)
 
-### 4.2 隐式需求（不做会踩坑）
+2. 预处理
+- 负责 prompt 注入、上下文摘要拼接、输入标准化。
+- 建议新增：src/core/context_builder.py
 
-- 需要统一标签协议，否则 parser 会频繁报错。
-- 需要原子写文件与目录隔离，否则并发跑实验会互相污染。
-- 需要工具调用轮次上限，否则 Agent 可能陷入无限工具循环。
-- 需要从“日志可读”升级到“日志可重放”，否则实验不可复现。
-- 需要把“模型输出格式失败”当作常态处理（重试与降级），不是异常处理。
+3. 核心逻辑处理
+- 负责调度、路由、状态推进。
+- 现有文件：[src/core/orchestrator.py](src/core/orchestrator.py)
 
----
+4. 模型接口
+- 负责 chat、tool-calling、流式输出、重试。
+- 现有文件：[src/models/llm_client.py](src/models/llm_client.py)
 
-## 5. 需求冲突裁决（必须先定规则）
+5. 推理管道
+- 负责 Generator/Reviser/Verifier/Searcher 的 run。
+- 现状是函数式：[src/core/pipeline.py](src/core/pipeline.py)
+- 建议改为对象式：src/agents/*.py
 
-### 5.1 ProblemMemory 是单例还是每题一个实例
+6. 结果解析
+- 负责 XML 标签解析、lemma 解析、cite 解析。
+- 现有文件：[src/utils/parser.py](src/utils/parser.py)
 
-裁决：每题一个实例。
+7. 自动化评估
+- 负责 answerbench/proofbench/gradingbench 批评测。
+- 现有文件：[scripts/run_imobench.py](scripts/run_imobench.py)
 
-解释：
-
-- 运行时“所有 Agent 共享”说的是同一题内共享同一个 ProblemMemory 实例。
-- 不同题必须隔离目录和状态，避免污染。
-
-### 5.2 history.jsonl 在哪里
-
-裁决：放在 {problem_id}/history.jsonl，与 artifact 同级。
-
-解释：
-
-- 这是你给的目录结构中最一致、最清晰、最易维护的方案。
-- 不再使用旧 data/logs/{problem_id}.jsonl 作为主链路。
-
----
-
-## 6. MVP 架构设计（正式版）
-
-## 6.1 核心设计原则
-
-- 单一职责：调度、推理、验证、记忆、工具分离。
-- 问题隔离：每题独立目录。
-- 分层暴露：摘要先注入，正文按需读，引用最后展开。
-- 可复现：状态、历史、配置、依赖版本全部可追踪。
-- 先稳后强：先做 MVP，可运行优先于花哨能力。
-
-## 6.2 模块划分（按你要求的类别）
-
-### 数据加载
-
-- 题目数据与基准数据加载。
-- 输入标准化（problem_id、problem_text、ground_truth）。
-
-### 预处理
-
-- Prompt 组装。
-- ProblemMemory 摘要注入。
-- 标签契约预检查。
-
-### 核心逻辑处理
-
-- Orchestrator 路由。
-- Agent 阶段循环。
-- Lemma 验证写入。
-
-### 模型接口
-
-- LLMClient 封装（thinking、tools、streaming、重试）。
-
-### 推理管道
-
-- Generator/Reviser/Verifier Agent 的 run。
-- Searcher 子 Agent 调用桥接。
-
-### 结果解析
-
-- 结构化标签解析：solution、lemma、verdict、verified_lemmas、cite。
-
-### 自动化评估
-
-- answerbench/proofbench/gradingbench 脚本。
-- 可追加 lemma 通过率、引用覆盖率等指标。
-
-### 日志与监控
-
+8. 日志与监控
+- 负责 raw 事件记录与 worklog 构建。
 - history.jsonl 原始事件。
 - state.json 快照。
 - artifact 实体内容。
+- 现有文件：[src/utils/logger.py](src/utils/logger.py)、[src/utils/worklog_builder.py](src/utils/worklog_builder.py)
 
-### 配置管理
+9. 配置管理
+- 负责 settings 与 prompts 加载。
+- 现有文件：[src/core/config.py](src/core/config.py)、[config/settings.yaml](config/settings.yaml)、[config/prompts.yaml](config/prompts.yaml)
 
-- settings.yaml + prompts.yaml。
-- 新增 memory 与 agent 工具配置块。
+10.  测试
+- 负责单测、集成测试、实时监控。
+- 现有文件：[tests/realtime_e2e_monitor.py](tests/realtime_e2e_monitor.py)
 
-### 测试
+### 3.3 整体目录结构树（当前精确版 + MVP 目标版）
 
-- 单测：Parser/Memory/Tool。
-- 集成测试：一题完整流程。
-- 回归测试：固定种子与固定 prompt 的可复现输出。
+#### 3.3.1 当前目录结构（精确到 py 与关键配置）
 
----
-
-## 7. 目标目录结构树（MVP，精确到 py 与关键配置）
-
-说明：下面是建议的重构后目录。标注“保留”的文件为现有文件延续；“新增”是建议添加。
-
+~~~text
 AletheiaReproduction/
-  main.py                               # 保留：CLI 入口，创建 ProblemMemory 并启动 Orchestrator
-  architecture.md                       # 新增：本架构文档
-  requirements.txt                      # 保留：依赖锁定
-  README.md                             # 保留：使用说明
+  main.py
+  config/
+    settings.yaml
+    prompts.yaml
+  scripts/
+    run_imobench.py
+    run_proofbench_advanced.py
+  src/
+    __init__.py
+    core/
+      __init__.py
+      agent.py
+      config.py
+      finalizer.py
+      orchestrator.py
+      pipeline.py
+      state.py
+    models/
+      __init__.py
+      llm_client.py
+    tools/
+      __init__.py
+      code_executor.py
+      registry.py
+    utils/
+      __init__.py
+      data_loader.py
+      evaluator.py
+      logger.py
+      parser.py
+      raw_log_reader.py
+      worklog_builder.py
+  tests/
+    realtime_e2e_monitor.py
+  bin/
+    tool/
+      _http_utils.py
+      web_search.py
+      wiki_search.py
+~~~
 
+#### 3.3.2 每个当前文件做什么（通俗说明）
+
+1. [main.py](main.py)：CLI 入口，读取题目、创建 Agent、输出结果并可生成 worklog。
+2. [scripts/run_imobench.py](scripts/run_imobench.py)：批量评测三类数据集并输出统计结果。
+3. [scripts/run_proofbench_advanced.py](scripts/run_proofbench_advanced.py)：只跑 proofbench 的 advanced 子集。
+4. [src/core/agent.py](src/core/agent.py)：当前门面类，装配 pipeline/orchestrator/logger/finalizer。
+5. [src/core/orchestrator.py](src/core/orchestrator.py)：当前核心状态机，负责节点调用和路由。
+6. [src/core/pipeline.py](src/core/pipeline.py)：当前函数式节点实现（generator/verifier/reviser/final）。
+7. [src/core/state.py](src/core/state.py)：当前状态模型（ProofState/VerificationLog/枚举）。
+8. [src/core/config.py](src/core/config.py)：配置和 prompt 加载，支持环境变量替换。
+9. [src/core/finalizer.py](src/core/finalizer.py)：构造最终输出文本（成功/失败/部分进展）。
+10. [src/models/llm_client.py](src/models/llm_client.py)：LLM 客户端，支持 thinking、流式、工具调用。
+11. [src/tools/registry.py](src/tools/registry.py)：工具 schema 注册与统一执行路由。
+12. [src/tools/code_executor.py](src/tools/code_executor.py)：Python 子进程沙箱执行。
+13. [src/utils/parser.py](src/utils/parser.py)：输出标签解析与 verdict 解析。
+14. [src/utils/logger.py](src/utils/logger.py)：JSONL 事件追加与 artifact markdown 保存。
+15. [src/utils/raw_log_reader.py](src/utils/raw_log_reader.py)：读取 raw JSONL。
+16. [src/utils/worklog_builder.py](src/utils/worklog_builder.py)：把 JSONL 转成可读 markdown 报告。
+17. [src/utils/data_loader.py](src/utils/data_loader.py)：读取 benchmark CSV 和回填 ground truth。
+18. [src/utils/evaluator.py](src/utils/evaluator.py)：短答和证明完整度的简单评测。
+19. [tests/realtime_e2e_monitor.py](tests/realtime_e2e_monitor.py)：E2E 实时监控脚本。
+20. [bin/tool/_http_utils.py](bin/tool/_http_utils.py)：网络抓取重试与 SSL 降级工具。
+21. [bin/tool/web_search.py](bin/tool/web_search.py)：arXiv 搜索和 LaTeX 抽取。
+22. [bin/tool/wiki_search.py](bin/tool/wiki_search.py)：Wikipedia 检索与清洗。
+
+#### 3.3.3 MVP 目标目录结构（建议落地版）
+
+~~~text
+AletheiaReproduction/
+  main.py
+  architecture_v1.md
+  requirements.txt
   config/
     settings.yaml                       # 保留并扩展：provider、timeouts、agent与memory配置
     prompts/                            # 新增：存放各agent的prompt配置
       generator.yaml                    # 新增：Generator的prompt
       reviser.yaml                      # 新增：Reviser的prompt
       verifier.yaml                     # 新增：Verifier的prompt
+      citation_reviewer.yaml            # 新增：CitationReviewer的prompt
       searcher.yaml                     # 新增：Searcher的prompt
-
-  states/                               # 新增：状态层，与src同级 (修改文件夹名以防与state.py重复)
-    __init__.py                         # 新增
-    state.py                            # 保留并迁移：ProofState 仅保留关键运行字段
-    problem_memory.py                   # 新增：每题记忆中枢与 artifact 读写
-
-  scripts/
-    run_imobench.py                     # 保留：批评测
-    run_proofbench_advanced.py          # 保留：proofbench 高难子集
+    default.yaml                    # 新增：复现实验默认配置
+  runs/                             # 新增：每题隔离产物根目录
+    {problem_id}/
+      solution.md
+      history.jsonl
+      state.json
+      artifact/
+        lemmas/
+        papers/
+        errors/
+        citations.bib
 
   src/
-    __init__.py                         # 保留
+    __init__.py
 
     core/
-      __init__.py                       # 保留
-      agent.py                          # 废弃或仅作简单入口，将原有逻辑转移至 Orchestrator 或直接实例化
-      orchestrator.py                   # 保留重构：中心调度、解析 verified_lemmas、写 history
-      finalizer.py                      # 保留增强：引用展开与 References 输出
-      config.py                         # 保留：配置加载
-      contracts.py                      # 新增：标签与 schema 常量
+      __init__.py
+      orchestrator.py               # 重构：调度、路由、状态管理
+      config.py
+      finalizer.py                  # 重构：引用替换 + References + 最终输出
+      context_builder.py            # 新增：组装 agent 输入上下文
 
-    agents/
-      __init__.py                       # 新增
+    agents/                         # 新增：对象化 Agent 层
+      __init__.py
       base.py                     # 新增：通用 Agent 基类（messages、tool loop、reset）
       generator.py                # 新增：生成解答与 lemma
       reviser.py                  # 新增：修订解答与 lemma
       verifier.py                 # 新增：验证解答与 lemma
+      citation_reviewer.py        # 新增：引用审查子 Agent（由 Verifier 按需调用）
       searcher.py                 # 新增：检索、论文清洗、内容提取与检索去重
 
+    memory/                         # 新增：问题级记忆层
+      __init__.py
+      state.py                      # 轻量 ProofState
+      problem_memory.py
+
     models/
-      __init__.py                       # 保留
-      llm_client.py                     # 保留：统一 chat 与 tool calling
+      __init__.py
+      llm_client.py
 
     tools/
-      __init__.py                       # 保留
-      registry.py                       # 保留重构：按 Agent 分别注册工具集合与 max_tool_rounds
+      __init__.py
+      code_executor.py
+      registry.py                   # 重构：按 agent 角色分别分配工具
       code_executor.py                  # 保留
-      artifact_reader.py                # 新增：按层读取 markdown 第一/二/三层
-      searcher_bridge.py                # 新增：Generator 调用 Searcher 的工具桥接
+      artifact_reader.py                # 新增：按层读取 markdown 第二层（详细证明）
+      search.py                # 新增：Generator 调用 Searcher 的工具桥接
 
     utils/
-      __init__.py                       # 保留
-      logging/                          # 新增：日志与事件记录相关
-        __init__.py
-        logger.py                       # 保留但迁移：ProblemMemory 体系下统一事件写入
-        raw_log_reader.py               # 保留
-        worklog_builder.py              # 保留
+      __init__.py
       parsing/                          # 新增：解析器与处理相关
         __init__.py
-        parser.py                       # 保留增强：新增 lemma/verified_lemmas/cite 解析
-        markdown_layer.py               # 新增：分层 markdown 读写工具
-        reference_builder.py            # 新增：把 cite:路径 转成标准引用与 bib
+        parser.py                     # 重构：多 lemma / verified_lemmas / cite 解析
+        reference_builder.py          # 新增：cite -> [1] 与 BibTeX
+        reference_reader.py                # 新增：按层读取 markdown 第三层（引用信息）
       evaluation/                       # 新增：测试数据加载与评估
         __init__.py
-        data_loader.py                  # 保留
-        evaluator.py                    # 保留
+        data_loader.py
+        evaluator.py
+      logging/                          # 新增：日志与事件记录相关
+        __init__.py
+        logger.py                     # 重构：改由 ProblemMemory 管理路径
+        raw_log_reader.py
+        worklog_builder.py
+
+  scripts/
+    run_imobench.py
+    run_proofbench_advanced.py
 
   tests/
-    realtime_e2e_monitor.py             # 保留
-    test_problem_memory.py              # 新增：状态/落盘/分层读取测试
-    test_parser_contracts.py            # 新增：标签契约测试
-    test_orchestrator_routing.py        # 新增：路由与写入行为测试
-    test_searcher_dedup.py              # 新增：去重行为测试
+    realtime_e2e_monitor.py
+    test_problem_memory.py          # 新增
+    test_parser_contract.py         # 新增
+    test_orchestrator_route.py      # 新增
+    test_citation_review.py         # 新增
+    test_searcher_dedup.py          # 新增
+~~~ 
 
-  runs/
-    {problem_id}/                       # 新增：每题隔离目录（运行产物）
-      history.jsonl                     # 原始事件日志，由 orchestrator 写
-      state.json                        # ProofState 快照
-      artifact/
-        lemmas/
-          001.md                        # 验证通过引理
-          002.md
-        papers/
-          arXiv_2501.12345.md           # 清洗后论文三层文档
-        errors/
-          001.md                        # 错误分析报告
-        citations.bib                   # 引用导出（可选）
+### 3.4 状态与上下文管理（存储位置、流转、数据样例）
 
----
+#### 3.4.1 存储在哪里
 
-## 8. 状态与上下文管理（存储位置、流转方式、示例）
+1. 内存态
+- Agent 阶段短期记忆：self.messages（每阶段 reset）。
+- 调度态：当前 turn 的路由信息。
 
-## 8.1 存储在哪里
-
-- 运行内存：
-  - Agent.messages（阶段内短期记忆，阶段结束清空）
-  - Orchestrator 当前轮状态（临时）
-
-- 文件持久化：
-  - runs/{problem_id}/state.json
-  - runs/{problem_id}/history.jsonl
-  - runs/{problem_id}/artifact/lemmas/*.md
-  - runs/{problem_id}/artifact/papers/*.md
-  - runs/{problem_id}/artifact/errors/*.md
-  - runs/{problem_id}/artifact/citations.bib
+2. 文件态
+- runs/{problem_id}/state.json：当前题目快照状态。
+- runs/{problem_id}/history.jsonl：原始事件流。
+- runs/{problem_id}/artifact/lemmas/*.md：验证通过引理。
+- runs/{problem_id}/artifact/papers/*.md：文献三层信息。
+- runs/{problem_id}/artifact/errors/*.md：错误分析报告。
+- runs/{problem_id}/artifact/citations.bib：最终导出引用。
 
 - 不引入数据库（MVP 先不用 Redis/SQLite）。
 
-## 8.2 在模块间如何流转
+#### 3.4.2 模块间如何流转
 
-1. main.py 创建 Orchestrator 与 ProblemMemory。
-2. Orchestrator 读取 ProblemMemory 的摘要索引，拼入 Agent prompt。
-3. Agent 在当前阶段内多轮 tool call，短期记忆仅保留在 self.messages。
-4. Agent 返回结构化文本后，Orchestrator 解析并写入 history.jsonl。
-5. 若 Verifier 给出 verified_lemmas，Orchestrator 调 ProblemMemory.add_lemma 落盘。
-6. state.json 在每轮末尾 save_state。
-7. Finalizer 把 cite:路径转 References，并可导出 BibTeX。
+~~~text
+main.py
+  -> Orchestrator.run(problem_id, problem_text)
+     -> ProblemMemory.init()
+    -> Generator.run(context + layer1 summaries)
+      -> (optional) Searcher.run(query_bundle)
+        -> expand_queries
+        -> multi_source_search
+        -> deduplicate + rerank
+        -> pdf_extract + section_parse + claim_candidate_extract
+        -> ProblemMemory.add_paper(...)
+    -> Verifier.run(problem + solution)
+        -> parse cites from solution
+        -> (if cites exist) CitationReviewer.run(cite_entries + cited_claim_spans)
+        -> output: verdict + verification + verified_lemmas + citation_review
+     -> Orchestrator.parse_verified_lemmas()
+        -> ProblemMemory.add_lemma(...)
+     -> route to Reviser or Generator
+     -> Finalizer(reference_builder) 生成最终可读输出，把 cite:路径转 References，并可导出 BibTeX。
+~~~
 
-## 8.3 数据格式示例
+#### 3.4.3 关键数据格式示例
 
-### state.json 示例
+state.json 示例：
 
-    {
-      "problem_id": "PB-Advanced-001_20260331_120000_000001",
-      "iteration_count": 2,
-      "status": "RUNNING",
-      "current_proof_path": "runs/PB-Advanced-001_20260331_120000_000001/",
-      "last_verifier_decision": "MINOR_FLAW",
-      "updated_at": "2026-03-31T12:34:56Z"
-    }
+~~~json
+{
+  "problem_id": "PB-Advanced-001_20260331_153000",
+  "iteration_count": 2,
+  "status": "RUNNING",
+  "current_solution_path": "runs/PB-Advanced-001_20260331_153000/solution.md",
+  "last_verifier_decision": "MINOR_FLAW",
+  "updated_at": "2026-03-31T15:31:08Z"
+}
+~~~
 
-### history.jsonl 单行示例
+history.jsonl 单条事件示例：同现有的data\logs\下的生成逻辑，只是观察运行过程和结果，方便修改代码的暂时性实现。
 
-    {"timestamp":"2026-03-31T12:35:10Z","agent_node":"VERIFIER","turn_id":2,"decision":"MINOR_FLAW","verification_report_path":"runs/PB-Advanced-001_20260331_120000_000001/artifact/errors/002.md","verified_lemmas":["runs/PB-Advanced-001_20260331_120000_000001/artifact/lemmas/001.md"]}
+~~~
 
-### lemma markdown（三层）示例
+lemma 文档（三层）示例：
 
-    ---
-    conditions:
-      - n is positive integer
-    conclusion: gcd(n, n+1)=1
-    path: runs/PB-Advanced-001_20260331_120000_000001/artifact/lemmas/001.md
-    ---
-
-    ## Layer2-Proof
-    Step 1. ...
-    Step 2. ...
-
-    ## Layer3-Source
-    Source: self_proved
-    Origin: Generator turn 1
-
-### paper markdown（三层）示例
-
-    ---
-    id: arxiv-2501-12345
-    theorem_summary: Under assumptions A,B, theorem T gives bound O(n log n)
-    usage_condition:
-      - assumption A
-      - assumption B
-    path: runs/PB-Advanced-001_20260331_120000_000001/artifact/papers/arXiv_2501_12345.md
-    ---
-
-    ## Layer2-ExtractedContent
-    Theorem statement...
-    Proof sketch...
-
-    ## Layer3-ReferenceMeta
-    arXiv_id: 2501.12345
-    title: Sample Title
-    authors: Alice; Bob
-    url: https://arxiv.org/abs/2501.12345
-
+~~~markdown
+---
+summary: 若 n 为正整数，则 gcd(n, n+1)=1
+conditions:
+  - n is positive integer
+conclusion: gcd(n, n+1)=1
+source: self_proved
 ---
 
-## 9. 配置与可复现性
+## Layer2-Proof
+Step 1. 设 d 同时整除 n 与 n+1，则 d 整除 (n+1)-n=1。
+Step 2. 因此 d=1，故 gcd(n,n+1)=1。
 
-## 9.1 配置文件建议
+## Layer3-Source
+Source: generator
+Reference: self_proved
+~~~
 
-建议在 settings.yaml 增加以下结构（示意）：
+paper 文档（三层）示例：
 
-    provider: deepseek
-
-    llm_defaults:
-      thinking: true
-      max_tokens: 16384
-      connect_timeout_seconds: 30
-      read_timeout_seconds: 600
-      stream_max_retries: 2
-
-    agent:
-      max_turns: 3
-      generator_max_tool_rounds: 5
-      reviser_max_tool_rounds: 3
-      verifier_max_tool_rounds: 8
-      searcher_max_tool_rounds: 5
-
-    memory:
-      root_dir: runs
-      auto_save_state_each_turn: true
-      inject_summary_limit: 20
-
-    reproducibility:
-      random_seed: 42
-      run_name_template: "{problem_id}_{timestamp}"
-      freeze_prompt_version: true
-      save_effective_config: true
-
+~~~markdown
+---
+arxiv_id: 2501.12345
+summary: 在条件 A,B 下，得到界 O(n log n)
+conditions:
+  - assumption A
+  - assumption B
+conclusion: bound O(n log n)
 ---
 
-## 10. 依赖项说明（必需库）
+## Layer2-Extracted
+Theorem ...
+Proof ...
 
-pydantic：定义 ProofState/ProblemMemory 元数据模型，避免字典字段漂移（场景见 src/core/state.py）。
-tenacity：统一网络与模型调用重试，替代分散的手写重试逻辑（场景建议用于 src/models/llm_client.py）。
-pyyaml：加载 settings.yaml 与 prompts.yaml（场景见 src/core/config.py）。
-openai：统一调用 OpenAI 兼容接口（场景见 src/models/llm_client.py）。
-httpx：配置细粒度超时、连接错误分类（场景见 src/models/llm_client.py）。
-python-dotenv：从 .env 注入密钥（场景见 main.py）。
-sympy：让 run_python 对符号推导更可靠（场景见 src/tools/code_executor.py）。
-numpy：数值验证与快速实验（场景见 src/tools/code_executor.py）。
-scipy：必要时补充科学计算函数（场景见 src/tools/code_executor.py）。
+## Layer3-Source
+title: Sample Paper
+authors: Alice; Bob
+url: https://arxiv.org/abs/2501.12345
+~~~
 
-可选但强烈建议：
+### 3.5 配置
 
-jsonschema：校验 Agent 标签输出结构，减少 parser 崩溃。
-orjson：高频 JSONL 写入更快。
+在你选定的技术路线下（渐进混合编排 + 全量检索链路 + 软引用门控），建议把配置拆成“运行控制 + 检索核验 + 提示词版本”三组。
 
----
+settings.yaml 建议新增字段：
 
-## 11. 你可能不熟悉的高级 Python 特性/库（每项一行）
+~~~yaml
+orchestrator:
+  mode: hybrid_loop                  # hybrid_loop | full_workflow
+  enable_stage_state: true
+  max_turns: 8
+  event_log: true
 
-dataclasses：用轻量对象承载 LLMResponse，减少样板代码并提高可读性（场景: src/models/llm_client.py）。
-类型联合与可选类型：通过 str | None 让接口契约更明确（场景: src/core/orchestrator.py）。
-Protocol 思维（建议引入）：用结构化接口约束 Pipeline/Logger/Finalizer，便于替换实现（场景: src/core/agent.py 适配器）。
-上下文管理与 finally：确保临时资源一定释放（场景: src/tools/code_executor.py 删除临时文件）。
-线程+join超时：把 LLM 摘要调用做硬超时隔离，避免卡死主流程（场景: src/utils/worklog_builder.py）。
-Pydantic BaseModel：对日志与状态字段做运行时校验（场景: src/core/state.py）。
-OpenAI function calling：把工具调用变成可结构化路由（场景: src/tools/registry.py 与 src/models/llm_client.py）。
-YAML 环境变量替换：配置里直接用 ENV 占位符，部署更灵活（场景: src/core/config.py）。
+resilience:
+  llm_retry_max_attempts: 3
+  tool_retry_max_attempts: 2
+  max_tool_rounds: 4
+  tool_timeout_seconds: 30
 
----
+retrieval:
+  depth: full                        # lite | full
+  enable_query_expansion: true
+  providers: [semantic_scholar, arxiv]
+  max_results_per_query: 20
+  pdf_extract:
+    enabled: true
+    max_pages: 24
+  dedup:
+    keys: [doi, arxiv_id, normalized_title]
 
-## 12. 可直接落地的代码改造清单（按优先级）
+verifier:
+  citation_review:
+    enabled: true
+    trigger_when_citation_present: true
+    subagent: citation_reviewer
+    mode: soft                        # soft | hard
+    checks:
+      - path_exists
+      - claim_source_match
+      - metadata_consistency
+      - doi_openalex_arxiv_title_cascade
+    warn_only: true
+    hard_fail_threshold: 0.4          # 仅在 hard 模式启用
+    max_tool_rounds: 3
 
-## P0（先做，保证系统跑起来）
+repro:
+  snapshot_prompts: true
+  snapshot_settings: true
+~~~
 
-1. 新增 states/problem_memory.py 与 states/state.py 整理
-   - 定义 ProblemMemory 类，并通过 `contextvars` 将其设置为当前题目的线程级全局单例/上下文变量。
-   - 实现 init_dirs、save_state、load_state、append_history、add_lemma、add_paper、add_error。
+prompts 配置建议：
+1. generator.yaml：显式约束“若使用外部知识，必须输出 [cite:path]”。
+2. verifier.yaml：显式约束“verified_lemmas 必须给出完整可复用证明文本”，且在存在 cite 时必须调用 CitationReviewer。
+3. citation_reviewer.yaml：显式约束“每条 cite 都要输出证据、结论、置信度、失败原因”。
+4. searcher.yaml：要求输出结构化 paper 记录（metadata + Layer2 摘要 + Layer3 来源）。
+5. reviser.yaml：只修故障点，不重写全稿。
 
-2. 重构 src/core/orchestrator.py
-   - 初始化 ProblemMemory 并设置到 ContextVar 中。
-   - 全面废弃旧的 `pipeline.py`，改为在 Orchestrator 中直接实例化并调度 `agents/` 下的对象。
-   - 每轮写 history.jsonl 与 state.json。
-   - 解析 verifier 的 verified_lemmas 并调用 add_lemma。
+### 3.6 依赖项说明（必需库 + 为什么需要）
 
-3. 扩展 src/utils/parsing/parser.py
-   - 新增 parse_lemmas_from_solution。
-   - 新增 parse_verified_lemmas。
-   - 新增 parse_citations。
+1. openai：统一访问 OpenAI 兼容模型接口，是所有 Agent 的主推理入口。
+2. pydantic：保证状态模型和结构化输出字段稳定，降低运行期脏数据风险。
+3. pyyaml：加载 settings 与 prompts，是配置驱动架构基础。
+4. httpx：网络超时、连接错误分类、重试协作依赖。
+5. python-dotenv：从 .env 注入密钥与 provider 配置，便于本地开发。
+6. sympy：在 run_python 中做符号推导与数学验证，避免纯字符串推理。
+7. numpy：数值验证和快速试算。
+8. scipy：部分高阶数值/科学计算场景支持。
+9. tenacity（建议新增）：把 API 与网络重试策略标准化，减少重复手写重试代码。
+10. pypdf（建议新增）：逐篇 PDF 正文抽取与分段摘要所需。
 
-4. 扩展 config/prompts/ 下的配置
-   - Generator 强制 lemma 位置和 cite:文件路径规则。
-   - Verifier 增加 verified_lemmas 输出契约。
+### 3.7 从顶向下的最小改造路线（建议顺序）
 
-## P1（增强可用性）
+P0（必须先做，保证主流程稳定）
+1. 调整文件架构。
+2. 新增 src/memory/problem_memory.py和state.py，实现 state/history/artifact 统一落盘。
+3. 扩展 parser 支持多 lemma、verified_lemmas、cite 提取。
+4. 新增运行协议对象（Action/RunEvent），并把 Orchestrator 每轮关键事件写入 history。
+5. Orchestrator 接入 ProblemMemory，并在每轮保存 state 和 history。
 
-5. 新增 src/tools/artifact_reader.py
-   - read_layer1(path)、read_layer2(path)、read_layer3(path)。
-   - 参数只接收文件路径。
+P1（增强可用性）
+1. 新建 src/agents，逐步替换 pipeline 函数为对象化 Agent。
+2. 引入 search.py + searcher_agent，实现全量文献链路（查询扩展、检索、去重、PDF 抽取、摘要、候选 claim）。
+3. 新增 src/agents/citation_reviewer.py，并在 src/agents/verifier.py 中按需调用，实现引用审查子代理链路。
+4. Finalizer 接入 reference_builder，输出标准 References 与 citation_review 摘要。
 
-6. 新增 src/agents/searcher.py 与 src/tools/searcher_bridge.py
-   - 支持 Generator 工具化调用 Searcher。
-   - 去重逻辑优先查 ProblemMemory 的 papers 索引。
+P2（增强可评测与可运维）
+1. 新增关键单测（memory/parser/routing/dedup/citation_reviewer/verifier_citation_route）。
+2. 批评测脚本切换到 runs 目录读取日志。
+3. 追加 dashboard.json、claim_graph.json 视图，吸收 ResearchClaw 的可观测性能力。
+4. 输出 run_meta.json 和 prompt 快照，完成复现闭环。
 
-7. 增强 src/core/finalizer.py
-   - 将 cite:路径 替换为编号引用 [1]。
-   - 自动生成 References 与 citations.bib。
+### 3.8 可直接落地的代码/文件建议（最小骨架）
 
-## P2（工程质量）
+#### 建议一：新增 src/memory/problem_memory.py
 
-8. 新增 tests/test_problem_memory.py、tests/test_parser_contracts.py、tests/test_orchestrator_routing.py。
-9. 在 run_imobench.py 增加 lemma_accept_rate、citation_coverage 两个指标。
+~~~python
+from __future__ import annotations
 
----
+import json
+from pathlib import Path
+from dataclasses import dataclass
 
-## 13. 关键接口草案（可直接照着实现）
+@dataclass
+class ProblemMemory:
+    problem_id: str
+    root_dir: str = "runs"
 
-### 13.1 ProblemMemory
+    def __post_init__(self):
+        self.base = Path(self.root_dir) / self.problem_id
+        self.artifact = self.base / "artifact"
+        self.lemmas = self.artifact / "lemmas"
+        self.papers = self.artifact / "papers"
+        self.errors = self.artifact / "errors"
+        self.state_file = self.base / "state.json"
+        self.history_file = self.base / "history.jsonl"
 
-    class ProblemMemory:
-        def __init__(self, problem_id: str, root_dir: str = "runs") -> None: ...
-        def init_dirs(self) -> None: ...
-        def save_state(self, state: dict) -> None: ...
-        def load_state(self) -> dict: ...
-        def append_history(self, event: dict) -> None: ...
-        def add_lemma(self, lemma_markdown: str) -> str: ...
-        def add_paper(self, paper_markdown: str, arxiv_id: str) -> str: ...
-        def add_error(self, error_markdown: str) -> str: ...
-        def list_layer1_summaries(self, kind: str) -> list[dict]: ...
+    def init_dirs(self) -> None:
+        for p in [self.base, self.artifact, self.lemmas, self.papers, self.errors]:
+            p.mkdir(parents=True, exist_ok=True)
+        if not self.state_file.exists():
+            self.state_file.write_text("{}\n", encoding="utf-8")
 
-### 13.2 Agent 基类
+    def save_state(self, state: dict) -> None:
+        self.state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    class BaseAgent:
-        def __init__(self, llm_client, tools: list[dict], max_tool_rounds: int) -> None: ...
-        def reset_stage_memory(self) -> None: ...
-        def run(self, payload: dict) -> dict: ...
+    def append_history(self, event: dict) -> None:
+        with self.history_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+~~~
 
-### 13.3 Verifier 输出契约（建议）
+#### 建议二：在 src/utils/parser.py 增加多标签提取
+
+~~~python
+import re
+
+def extract_xml_tags(text: str, tag: str) -> list[str]:
+    pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
+    return [m.group(1).strip() for m in pattern.finditer(text or "")]
+
+def parse_citations(text: str) -> list[str]:
+    items = re.findall(r"\[cite:([^\]]+)\]", text or "")
+    seen = set()
+    out = []
+    for x in items:
+        x = x.strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+~~~
+
+#### 建议三：Orchestrator 每轮统一写状态与事件
+
+~~~python
+# 伪代码示意
+memory = ProblemMemory(problem_id)
+memory.init_dirs()
+
+for turn in range(max_turns):
+    gen_text = generator.run(...)
+    memory.append_history({...})
+
+    ver_text = verifier.run(...)
+    memory.append_history({...})
+
+    verified = parse_verified_lemmas(ver_text)
+    for lemma in verified:
+        memory.add_lemma(lemma["markdown"])
+
+    memory.save_state({...})
+~~~
+
+#### 建议四：Verifier 输出契约（XML 标签 + 结构化字段）
 
     <verdict>CORRECT|MINOR_FLAW|CRITICAL_FLAW</verdict>
     <verification>...</verification>
-    <verified_lemmas>
-      <lemma>
-        <name>Lemma 1</name>
-        <proof>完整证明文本</proof>
-        <source>self_proved|artifact_path</source>
-      </lemma>
-    </verified_lemmas>
+    <lemma>
+      <introduction>引理简述</introduction>
+      <theorem>引理内容（包含使用条件、结论）</theorem>
+      <proof>完整证明文本</proof>
+      <source>self_proved|artifact_path</source>
+    </lemma>
+    <lemma>
+      <introduction>引理简述</introduction>
+      <theorem>引理内容（包含使用条件、结论）</theorem>
+      <proof>完整证明文本</proof>
+      <source>self_proved|artifact_path</source>
+    </lemma>
+
+#### 建议五：新增 src/agents/citation_reviewer.py（由 Verifier 按需调用）
+
+~~~python
+class CitationReviewerAgent(BaseAgent):
+  def review_one(self, cite_entry: dict, claim_span: str) -> dict:
+    # 路径存在性、引用片段一致性、元信息一致性、外部级联核验
+    # 返回 {passed, evidence, confidence, failure_reason}
+    ...
+
+  def review_all(self, cites: list[dict], claim_spans: list[str]) -> dict:
+    # 返回 {summary, items, severity_suggestion}
+    ...
+~~~
+
+#### 建议六：在 Verifier 中按需调用 CitationReviewer
+
+~~~python
+# 伪代码示意
+cites = parse_citations(solution_text)
+citation_review = None
+if cites:
+  citation_review = citation_reviewer.review_all(cites, claim_spans)
+
+verifier_output = {
+  "verdict": verdict,
+  "verification": verification,
+  "verified_lemmas": verified_lemmas,
+  "citation_review": citation_review,
+}
+~~~
+
+#### 建议七：在 Searcher 中固定全量链路输出契约
+
+~~~python
+{
+  "query": "...",
+  "papers": [
+    {
+      "paper_id": "...",
+      "title": "...",
+      "layer1_summary": "...",
+      "layer2_extract": "...",
+      "layer3_source": {"doi": "...", "arxiv_id": "...", "url": "..."},
+      "candidate_claims": ["..."]
+    }
+  ]
+}
+~~~
+
+### 3.9 MVP 验收标准（你可以照这个打勾）
+
+1. 每道题都生成 runs/{problem_id}/state.json 和 history.jsonl。
+2. Verifier 输出的 verified_lemmas 能被解析并落盘到 artifact/lemmas。
+3. Generator 的 cite 路径在最终输出被替换成 [1] 样式，并有 References。
+4. Searcher 默认执行全量链路（检索、去重、PDF 抽取、摘要、candidate_claims），且同一 arXiv ID 二次检索不重复写 paper 文件。
+5. Verifier 在存在 cite 时会调用 CitationReviewer，并输出 citation_review；未通过项会进入 warning，但不阻塞最终出稿（soft mode）。
+6. 在 max_turns 与 max_tool_rounds 内流程稳定收敛，不出现无限工具调用。
+
+### 3.10 三项目可借鉴点到本架构的映射总表
+
+1. EvoScientist -> 运行时编排能力
+- 迁移：Action/RunEvent + resilience wrapper。
+- 落位：src/core/orchestrator.py、src/models/llm_client.py、src/agents/base.py。
+
+2. AutoResearchClaw -> 检索与引用可信能力
+- 迁移：全量文献链路 + 级联引用核验（由 Verifier 调用 CitationReviewer，软门控）。
+- 落位：src/agents/searcher.py、src/tools/search.py、src/agents/verifier.py、src/agents/citation_reviewer.py、src/utils/parsing/reference_builder.py。
+
+3. ResearchClaw -> typed 状态与阶段可观测性
+- 迁移：ProblemMemory typed state + stage 重算 + dashboard/claim_graph 视图。
+- 落位：src/memory/state.py、src/memory/problem_memory.py、src/core/orchestrator.py。
 
 ---
 
-## 14. 风险与防呆
+## 4. 给你的执行建议（按周推进）
 
-- 风险1：LLM 不按标签输出或输出多个同名标签。
-  - 防呆：parser 彻底舍弃最初的 `text.find`，改用纯正则 `re.finditer` 支持多重复数 `<lemma>` 解析，防丢数据；加两轮格式提醒重试。
+第 1 周：先做 P0（尤其是 ProblemMemory 与 parser 升级），保证“能跑且能存”。
+第 2 周：做 P1（Agent 对象化 + Searcher bridge + 引用处理），实现你要的核心体验。
+第 3 周：做 P2（测试与复现闭环），把实验可信度补齐。
 
-- 风险2：工具调用过多导致延迟和费用暴涨。
-  - 防呆：每个 Agent 设置 max_tool_rounds，超限强制收敛。Searcher 执行完毕后**仅返回**“成功下载，路径为 xxx”，强迫 Generator 在自己的下一轮思维中按需显式调用 `read_artifact`，精确控制 Token 开销。
-
-- 风险3：引理误收录。
-  - 防呆：Verifier 必须输出完整 proof，缺失则拒绝入库。
-
-- 风险4：引用路径失效与幻觉。
-  - 防呆：作为 Verifier 的一项隐式验证任务。在 Verifier 的 Prompt 中强制要求校验 `[cite:xxx]` 路径的有效性。如果发现造假或找不到文件，将其作为 FLAW 加入错误报告打回，交给 Reviser 或 Generator 修补。最后 Finalizer 仅负责转义而不再抛异常。
-
----
-
-## 15. MVP 完成标准（Definition of Done）
-
-满足以下条件即算 MVP 完成：
-
-1. 可以完整跑通一题：Generator -> Verifier -> Reviser/Generator -> Final。
-2. runs/{problem_id} 目录完整生成 state.json、history.jsonl、artifact 子目录。
-3. Verifier 能输出 verified_lemmas，且 Orchestrator 能落盘成功引理。
-4. Generator 能在引用时输出 cite:路径，Finalizer 能生成 References。
-5. 至少 3 个核心单测通过（ProblemMemory、Parser、Routing）。
-6. run_imobench.py 仍可运行，不破坏现有评测流程。
-
----
-
-## 16. 与当前代码的对应关系（你可以从这里开始动手）
-
-- 现有调度主干在 src/core/orchestrator.py，先从这里接入 ProblemMemory。
-- 现有状态模型在 src/core/state.py，先把 history 从内存重度依赖改成文件主存。
-- 现有标签解析在 src/utils/parser.py，先扩 lemma 与 citation 的解析函数。
-- 现有工具入口在 src/tools/registry.py，先引入 artifact_reader 与 searcher_bridge。
-- 现有最终输出在 src/core/finalizer.py，最后接引用展开。
-
-这条路径对初学者最友好：
-先改状态与解析，再改调度，再加新工具，最后再补 Searcher。
-
----
-
-## 17. 结论
-
-本方案把复杂需求拆成了一个可执行的 MVP 重构路线：
-
-- 架构上，完成从函数链到 Agent 协作的升级。
-- 工程上，完成每题隔离、可追踪、可复现的记忆体系。
-- 研究上，完成引理沉淀、文献分层暴露与引用追踪。
-
-你可以按 P0 -> P1 -> P2 顺序推进；每一步都能运行、都能验收，不会陷入“大改到一半跑不动”的状态。
+如果你希望，我下一步可以直接基于这份文档，帮你生成第一批可运行代码补丁（先做 P0）。

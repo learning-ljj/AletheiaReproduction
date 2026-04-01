@@ -1,248 +1,620 @@
-﻿# ResearchMathAgent 重构任务分解计划 (MVP 落地路线)
+# AletheiaReproduction 执行任务单 v5（按反馈修订）
 
-这份任务清单旨在将 `architecture.md` 的概念与**现存代码库**进行深度融合。请执行代理 (Engineering LLM) 每次只领取**一个**任务。在执行每个任务时，必须**严格优先阅读**“现存代码剖析”中指定的旧文件，在理清现有逻辑后，再进行修改或创建。
-
----
-
-## 阶段 1：状态管理与全局上下文 (State & Context)
-
-### Task 1: 基础状态数据模型重构 (`states/state.py`)
-- **现存代码剖析 (须优先阅读)**：阅读 `src/core/state.py`。原有的 `ProofState` 包含 `history: list[VerificationLog]` 这种长文本列表，导致对象臃肿，无法序列化为轻量快照。
-- **负责的具体功能**：将状态流转的标量数据与其对应的历史记录剥离。定义轻量化、带有类型校验的数据类，以记录当前推演的轮数、状态机制等，防止后续流转发生字段变异。
-- **类名/函数名**：
-  - `class RunStatus(str, Enum)`
-  - `class VerificationDecision(str, Enum)`
-  - `class ProofState(BaseModel)`
-- **输入参数与输出结果格式**：
-  - 输入：无直接输入，只定义模型 Schema。包含字段 `problem_id: str`, `iteration_count: int`, `status: RunStatus`, `current_proof_path: str`, `last_verifier_decision: VerificationDecision | None` 等。
-  - 输出格式：通过 `.model_dump_json()` 输出符合 Schema 的 JSON 字符串。
-- **测试设计**：
-  - **冒烟测试**：使用合法字段实例化 `ProofState`，并且无报错抛出。
-  - **功能测试 (真实场景模拟)**：模拟解题过程中（例如刚执行完第一轮 Verifier 判别为 MINOR_FLAW），尝试实例化 `ProofState`，其中故意将 `iteration_count` 设置为非整型字符串 `"第一轮"`，预期输出是 Pydantic 抛出 `ValidationError`；修正后重新实例化并调用 `model_dump_json()`，预期输出一个严格的 JSON 字符串以备落盘。
-- **核心知识点标注**：`pydantic.BaseModel` - 用于运行时自动数据类型校验，避免字典形式在链路传递时产生的“键/值漂移”。
-
-### Task 2: 题目级记忆中枢实现 (`states/problem_memory.py`)
-- **现存代码剖析 (须优先阅读)**：阅读 `src/utils/logger.py`（里面零散的追加写 jsonl）。旧系统缺乏对单题多模态产物（引理、文献、错误报告）的统一统筹。
-- **负责的具体功能**：作为单道题目的数据管家（通过上下文变量挂载），提供标准化的文件夹初始化、状态保存、以及三级目录产物（lemma/paper/errors）的原子写入接口和读取 Layer 1 摘要的索引接口。
-- **类名/函数名**： `class ProblemMemory`
-  - `init_dirs(self) -> None`
-  - `save_state(self, state_json: str) -> None`
-  - `load_state(self) -> dict`
-  - `append_history(self, event: dict) -> None`
-  - `add_lemma(self, lemma_markdown: str) -> str`
-  - `add_paper(self, paper_markdown: str, file_name: str) -> str`
-  - `list_layer1_summaries(self, kind: str) -> list[dict]`
-- **输入参数与输出结果格式**：
-  - 输入：`__init__(problem_id: str, root_dir: str="runs")`。各类 `add_` 方法输入结构化字符串。
-  - 输出格式：`add_` 类方法返回相对磁盘路径（如 `runs/{id}/artifact/lemmas/001.md`），`list_layer1_summaries` 返回包含 frontmatter 解析内容的列表 `list[dict]`。
-- **测试设计**：
-  - **冒烟测试**：实例化 `ProblemMemory("test_prob_01")`，调用 `init_dirs` 并检查文件系统是否存在对应的文件夹。
-  - **功能测试 (真实场景模拟)**：使用 `pytest` 和 `tmp_path` 模拟在解题时 Generator 提交了一个引理。调用 `add_lemma` 写入包含标准 Yaml 前缀的 markdown。预期输出是硬盘上生成指定文件，且调用 `list_layer1_summaries("lemmas")` 能够成功读取出该引理的条件与结论（YAML 提取）。
-- **核心知识点标注**：`contextvars.ContextVar` - 用于实现避免层层传参的线程级“当前题目沙盒变量”；`pathlib.Path` - 用于跨平台安全的系统目录原子读写。
-
-### Task 3: 阶段 1 集成测试 (状态与存储合并)
-- **负责的具体功能**：确保 `ProofState` 实例与 `ProblemMemory` 在一次完整的问题流转周期内运作正常，没有存偏或丢失数据。
-- **类名/函数名**：`test_phase1_state_management()`
-- **输入参数与输出结果格式**：不适用特定的输入参数，利用测试框架运行。输出即断言无任何 Traceback 或字段错误。
-- **测试设计**：
-  - **阶段集成测试**：在测试用例中：
-    1. 给出一道虚拟 IMO 题目 ID，新建 `ProblemMemory`，挂载进 `ContextVar`。
-    2. 创建 `ProofState` 描述刚完成第一轮 Generator 的状态。
-    3. 序列化 `ProofState` 并交由 `ProblemMemory` 存入 `state.json`。
-    4. 追加一条 `{"action": "generate_start"}` 传入 `history.jsonl`。
-    5. 从硬盘读取加载复原验证数据一致性！预期结果是不抛异常，断言各个字段绝对相等。
+目标：
+1. 先完成对齐审计，再执行可落地改造。
+2. 任务顺序严格按依赖推进，不跳阶段。
+3. 每个任务都给出改动文件、操作步骤、验收命令、完成标准。
+4. 将三个参考项目的实现作为本项目代码实现参考，明确借鉴点、落位位置与迁移避坑。
+5. 保证任务按合理顺序逐步实现。
 
 ---
 
-## 阶段 2：解析层增强与分层文件读写 (Parsers & IO)
+## 0. 执行输入与强约束
 
-### Task 4: 多重 XML 标签正则解析器 (`utils/parsing/parser.py`)
-- **现存代码剖析 (须优先阅读)**：阅读 `src/utils/parser.py`。目前的 `text.find` 技术只能切取首个标签包裹的内容。假如模型在一段文字输出了两个 `<lemma>`，第二个将被抛弃。
-- **负责的具体功能**：通过纯正则匹配引擎，全量提取同级、多重复数出现的特定 XML 标签，确保没有任何 Generator 自证的引理或结论被遗漏。
-- **类名/函数名**：
-  - `extract_xml_tags(text: str, tag: str) -> list[str]`
-  - `parse_lemmas_from_solution(solution_text: str) -> list[str]`
-  - `parse_verified_lemmas(text: str) -> list[dict]` 
-- **输入参数与输出结果格式**：
-  - 输入：模型长篇返回的非结构化包含 XML 的 `text: str`。
-  - 输出格式：被解包好的 `list[str]` 或对于较复杂的标签提取组合后输出 `list[dict]` 结构。
-- **测试设计**：
-  - **冒烟测试**：传入只有一个 `<tag>hi</tag>` 的文本，预期返回 `["hi"]`。
-  - **功能测试 (真实场景模拟)**：模拟 Generator 输出：“这里我给出两个引理：<lemma>证明1使用n=1...</lemma>然后还有<lemma>\n推论2中...\n</lemma>。最后得到方案...”。通过函数提取预期输出为长度为 `2` 的数组，且换行符必须被完好包裹其中没有截断失真。
-- **核心知识点标注**：`re.finditer` 结合 `re.DOTALL` - 允许非贪婪的多轮正则捕获，并允许 `.` 匹配跨越多行的换行符。
-
-### Task 5: Markdown 分层读写引擎 (`utils/parsing/markdown_layer.py`)
-- **现存代码剖析 (须优先阅读)**：当前项目中不存在。需结合 `architecture.md` 中对于 `lemma` 和 `paper` 的三层结构（YAML Frontmatter + Layer2 正文 + Layer3 来源元信息）设计。
-- **负责的具体功能**：保证后续沉淀的引理和文献均可被程序化结构切片，只存留“摘要”在主索引内存（Layer 1），需要深入看证明时由工具函数从该系统读取正文（Layer 2）。
-- **类名/函数名**：
-  - `parse_markdown_layers(content: str) -> dict` 
-  - `build_markdown_layers(frontmatter: dict, layer2: str, layer3: str) -> str`
-- **输入参数与输出结果格式**：
-  - 输入：解析时输入标准三段式合体的 Markdown `str`。构筑时输入前中后分离信息数据。
-  - 输出格式：前者返回包含 `{"frontmatter": dict, "layer2": str, "layer3": str}` 的字典。后者返回物理文件该有的 Markdown 文本格式 `str`。
-- **测试设计**：
-  - **冒烟测试**：传入一个含有 `---` 包含一行 YAML 的极简 markdown 进行提取反解测试。
-  - **功能测试 (真实场景模拟)**：注入一篇具有多级标题和 LaTeX 宏包正文的长难文献文本（其中包含其它 Markdown Heading 锚点，但核心需要通过正则和指定 Header 的组合切除锚定）。验证解析引擎是否正确剥离了不含 `---` 的 YAML 纯字典、完整正文以及尾随 Reference，预期输出为 3 个 Key 对应的字段不空且没有错位粘连。
-- **核心知识点标注**：`yaml.safe_load` - 健壮解析 YAML 以提取 Metadata；灵活运用字符串基于标志性 Headers 锚点进行安全 Split 提取。
-
-### Task 6: 桥接分层读取机制 (`tools/artifact_reader.py` 与 `registry.py`)
-- **现存代码剖析 (须优先阅读)**：阅读旧版 `src/tools/registry.py`，查看 OpenAPI Function Schema 之前的定义方式及入参处理。
-- **负责的具体功能**：提供开放给 Agent 使用读取按需暴露的武库。必须确保精准读取，只出该出的那一部分内容来阻断大文献导致的 Token 灾难。
-- **类名/函数名**：
-  - `read_artifact_layer1(path: str) -> str`
-  - `read_artifact_layer2(path: str) -> str`
-  - 添加工具的 Schema 声明字典，修改 `registry.py` (拆分为局部载入或全局声明皆可)。
-- **输入参数与输出结果格式**：
-  - 输入：模型推演得到的所需文献库的绝对/相对路径名 `path: str`。
-  - 输出格式：所请求层级的纯内容 `str`。倘若是不存在的文件或存在非法的目录跳跃（如 `../`），务必返回包裹成人类自然语言的报错提示符 `str`，而勿引发代码执行终端 Crash 崩溃。
-- **测试设计**：
-  - **冒烟测试**：给出一个利用 Task 5 引擎生成的固定盘文件，看读取函数能否返回其正文文本。
-  - **功能测试 (真实场景模拟)**：模拟大模型产生幻觉/意图投毒情况，传入了一个莫须有路径 `runs/not_exist_99/lemmas/99.md` 以及具有穿透威胁的 `../../../../etc/passwd`，程序必须将其拦截化解并预期返回一段如 `Error: Path not found or illegal access`，以便把这个挫败信息抛回给 Agent 在下一轮进行自行思考纠正。
-- **核心知识点标注**：`Path.resolve()` 安全校验过滤体系 - 抵御潜在的路径穿越安全越权访问行为。
-
-### Task 7: 阶段 2 集成测试 (解析读写流环绕联调)
-- **负责的具体功能**：打通 Parser -> LayerEngine -> ArtifactReader -> ProblemMemory 机制。
-- **测试设计**：
-  - **阶段集成测试**：编写包含这四者的联合单元测试脚本。生成一段含假数据的巨大 `LLM` 日志体 -> 利用 Parser 剥离出数个 `<lemma>` 文本 -> 拆装并利用 LayerEngine 结合成符合要求的 Markdown 文本 -> 将其通过 Problem Memory 保存进临时 `tmp_path` 模拟的 Artifacts 目录下 -> 再使用 `read_artifact_layer2` 根据取得的路径从磁盘反向精准捞出未带头尾标识的纯核心正文。预期过程中无一脱节错录的抛出异常并保证流转前后的字符串还原程度一致。
+1. 对齐输入文档：`architecture.md`、`idea.md`、`参考evoscientist/portable_agent_core/README.md`、`参考AutoResearchClaw/README.md`、`参考ResearchClaw/README.md`。
+2. 替换策略：被新架构替代的旧能力不做回退/降级分支，直接替换。
+3. 检索功能实现策略：停止推进“旧 websearch 工具归位”；统一建设 SearcherAgent 检索链。
+4. 顺序策略：严格按本任务单顺序推进，未通过当前阶段验收，不进入下一阶段。
+5. 可验证策略：每个任务必须给出输入输出、伪代码、验收命令、完成标准。
+6. 架构对齐原则:每个任务都必须对应 architecture.md 和 idea.md 的明确需求点。
+7. 协议先行原则:先固定输出协议与解析，再扩展Agent 和子代理能力。
 
 ---
 
-## 阶段 3：智能体基础与子智能体网络 (Agents Framework & Searcher)
+## 1. 三参考项目借鉴映射（怎么借鉴、借鉴什么、避开什么坑）
 
-### Task 8: 智能体状态基类抽象封装 (`agents/base.py`)
-- **现存代码剖析 (须优先阅读)**：告别 `src/core/pipeline.py` 此等以僵硬函数传导参数流控制大模型的范式；仔细阅览原 `src/models/llm_client.py` 提供的方法接口：尤其是 `chat_with_tools`。
-- **负责的具体功能**：搭建带有 ReAct 思想核心的内卷长存的 Agent 地基。内部负责将单题的一轮解答任务维护在一个具有生命周期的 `messages` 短期私有记忆沙盒中。直到由于没 Tool 被触发或触发总数逼近阀值后向外部吐放最后定案。
-- **类名/函数名**：`class BaseAgent`
-  - `__init__(self, llm_client, tools: list[dict], max_tool_rounds: int)`
-  - `reset_stage_memory(self) -> None`
-  - `run(self, payload: dict) -> str` (负责内部不断向 LLMClient 发送 `self.messages`)
-- **输入参数与输出结果格式**：
-  - 输入：构建所需的所有外部 `tools` 和包含上下文 `payload` 提示词。
-  - 输出格式：当判断不含 Tool_calls 或超限后，将最后一手的最终文本回答以 `str` 抛返。
-- **测试设计**：
-  - **冒烟测试**：挂载一个只回答一段毫无 Tool 信息文字的 Fake/Mock LLM Client 走通其 run 方法是否能即刻跳出。
-  - **功能测试 (真实场景模拟)**：注入包含两个虚化数学加算法 `tools` 的子类。在执行前注入一个可被利用的 Mock Client （能够依据 Tool 定义自动传回两次中间调用意向），输入提示“解答之前请用计算器加2之后加3”。预期测试输出：检查运行完毕后通过探查 `self.messages` 记录，其中务必精确保留了其按顺序经历 user-prompt -> tool-call -> tool-return 的串行短留痕链路，及调用 `reset_stage_memory` 后记录的强制清零归寂能力。
-- **核心知识点标注**：While 大循环控制与 `tool_call_id` 拼装 - 面向对象化私隐状态控制的基础实现法门。
+### 1.1 EvoScientist 借鉴映射
 
-### Task 9: 文献自动打捞小队 (`agents/searcher.py`)
-- **现存代码剖析 (须优先阅读)**：阅读原来暴力抓取截断且没状态感知的 `src/tools/web_search.py` 中 `read_arxiv_latex` 等组件。
-- **负责的具体功能**：演变升格成为独立思考工作网络的一员（由于并非主工作主轴，它不会直接被架构抛送问题）。只需执行针对目标意图资料的寻找->理解提炼要点->转为 3 层构架的 Markdown 模型落盘的操作。并承揽相同资料重复提取的防火防重灾设计任务。
-- **类名/函数名**：`class SearcherAgent(BaseAgent)`
-  - `execute_search_task(self, query: str) -> str` (继承调用内部的 run 或单独定制)
-- **输入参数与输出结果格式**：
-  - 输入：通过上一级父 Agent 要求代查传下来的含有意图的自然语言 `query: str`。
-  - 输出格式：为控制父级 Token 极简通告语，形如："已成功检索此定理文献，摘要与出处存储落盘于 relative_path/XXX.md 中待用"。
-- **测试设计**：
-  - **冒烟测试**：传入一串普适化的需求要求搜索某概念证实是否平稳不报错进行。
-  - **功能测试 (真实场景模拟)**：先人为给 ContextVar 里的 `ProblemMemory` 垫入一个具备某 `arxiv_id` 的虚拟 Layer1 报告数据代表已曾经调用拿过此文件；接着唤起此实例命令它按相关词查。预期输出：由于 Idempotency 去重设计的判断保护，它须在前置检查短路阻绝任何实外网 API 开销的抛出！仅仅回执已存在的旧沙盒路径宣告完毕。
-- **核心知识点标注**：Idempotency 防重截留设计 - 避免对于类似论文和定理因父级陷入“死钻牛角尖”无限 Tool 工具空耗 Token 死环。
+1. 借鉴内容：主 Agent 的动作循环（工具调用/子代理委派/结束）、受保护工具调用、重试与自修正上限。
+2. 本项目落位：`src/agents/base.py`、`src/tools/registry.py`、`src/core/orchestrator.py`。
+3. 借鉴方式：
+   - 在 BaseAgent 中实现阶段内 `messages` 与 `max_tool_rounds`。
+   - 在工具执行路径加入 guarded wrapper，错误转结构化结果而非抛异常中断。
+   - 对解析失败仅允许有界修复重试，避免无限循环。
+4. 避坑要点：
+   - 不要让 Orchestrator 管理工具细节，Orchestrator 只做阶段路由。
+   - 不要无限重试，必须设置严格上限。
+   - 不要把大段推理原文写入事件流，避免 history 膨胀。
 
-### Task 10: 构建跨端桥接调度器 (`tools/searcher_bridge.py`)
-- **现存代码剖析 (须优先阅读)**：察看当前的 Tool 工具向核心注接流程。
-- **负责的具体功能**：因 Generator 这个大节点无法在自己私设的逻辑里动态的编写代码 instantiate 一个旁边的 Searcher 兄弟类进行通讯调用，因此要在体系内造个供它是唤的接口将其封装为一条规范的 OpenAI Tool Scheme 管道函数。
-- **类名/函数名**：
-  - `call_searcher_subagent(query: str) -> str`
-  - 导出并完善注册一个关于它的 JSON `searcher_bridge_schema` 参数大类给 Generator 食用。
-- **输入参数与输出结果格式**：
-  - 输入参数：被大模型认定的必须搜集目标描述串 `query`。
-  - 输出结果格式：执行闭环所换的返回通畅路径或提示短字符串。
-- **测试设计**：
-  - **冒烟测试**：不引入复杂机制地单独调此方法观测是不是确实转入了实例方法。
-  - **功能测试 (真实场景模拟)**：构建不连通 LLM 网络、唯作函数流转测试的小场景中注入，查验其在获取下文的接驳层畅通无卡顿死锁危险发生。
-- **核心知识点标注**：Delegation 代理传导设计模式 - 将耗时或重量级高级 Agent 实质用作从属功能的隔离策略。
+### 1.2 AutoResearchClaw 借鉴映射
 
-### Task 11: 阶段 3 集成测试 (主从工具大循环测试)
-- **负责的具体功能**：联调验证一条跨级代理传递。BaseAgent-> Bridge Tool -> Searcher -> Memory 落回的传接通路。
-- **测试设计**：
-  - **阶段集成测试**：编写一主测试入口赋予 `BaseAgent` 假身一携带了 `searcher_bridge` 新方案的大脑；对测试替身命令："去研究一份新证明法材料再告诉我什么概念。"；断言它顺利感知应该用此新 Tool 并将内容下穿交给了底下的人！当模拟的搜索进程结束后；主系统再次从沙盒中查找到确确确实是小弟帮其生成的那份成果时；一切即验证合格并顺利。
+1. 借鉴内容：稳定检索链路（查询扩展-多源检索-去重-抽取-落盘）、引用核验级联、最终产物打包思路。
+2. 本项目落位：`src/agents/searcher.py`、`src/tools/search.py`、`src/agents/citation_reviewer.py`、`src/utils/reference_builder.py`、`src/core/finalizer.py`。
+3. 借鉴方式：
+   - SearcherAgent 固定全链路输出，不允许“只检索不落盘”。
+   - CitationReviewer 在 Verifier 检测到 cite 时按需触发并返回结构化审查结果。
+   - Finalizer 输出 references、bibtex 与 manifest 摘要。
+4. 避坑要点：
+   - 去重不能只按标题，顺序采用 DOI > arXiv ID > normalized title。
+   - 不能只校验路径存在，必须核验“引用断言与来源内容一致性”。
+   - 不要用模板降级掩盖失败，失败需结构化暴露。
+
+### 1.3 ResearchClaw 借鉴映射
+
+1. 借鉴内容：typed state、JSON 持久化、阶段状态重算、可观测视图。
+2. 本项目落位：`src/memory/state.py`、`src/memory/problem_memory.py`、`src/core/orchestrator.py`。
+3. 借鉴方式：
+   - 将状态快照与事件增量分离存储（state.json + history.jsonl）。
+   - 每轮依据 verdict 重算阶段状态并持久化。
+   - 输出最小可观测字段，支持定位阻塞原因。
+4. 避坑要点：
+   - 初期 schema 不要过宽，先最小可用字段。
+   - ID 规则必须统一，否则 lemma/citation 关联失真。
+   - 不要混淆“运行时临时字段”和“长期状态字段”。
 
 ---
 
-## 阶段 4：算力节点重构与交接 (Core Workers)
+## 2. 任务总览（合理顺序）
 
-### Task 12: 出题与引理规划者重塑 (`agents/generator.py` 与 `prompts/generator.yaml`)
-- **现存代码剖析 (须优先阅读)**：翻越审读过去由于一单全揽全包，将所有题词混合写在单一一个大档内的 `config/prompts.yaml` 以及没有能力执行私我纠错的 `call_generator` 入口逻辑。
-- **负责的具体功能**：将之前对它的无要求进行升格，令其负责吸收来自 Memory 提取出来的过往 Error Report 与之前就捞回的 Layer 1 (其它人的摘要与证明结论备查表)！并通过新规命令强制它的解答以严格限定的 `<lemma>` 开头自证。且外部引用务必插入规整好的 `[cite:相对路径]`。
-- **类名/函数名**：`class GeneratorAgent(BaseAgent)`
-  - 重写装配 prompt 的组装准备函数 `build_context` （或其覆写版本）。
-- **输入参数与输出结果格式**：
-  - 输入：`problem_text: str` 题目主料，加上附带过往血泪的 `error_report: str | None` （通过沙盒内含去直接读取提取组合）。
-  - 输出格式：严格拥有 `<solution>` 、自证标签段、以及相关引用出处的连篇答卷结果 `str`。
-- **测试设计**：
-  - **冒烟测试**：对仅有基本题目大纲启动此新版组件能否如愿启动成功运转。
-  - **功能测试 (真实场景模拟)**：在 Mock 替身的 `ProblemMemory` 单例里制造好含有 1篇既定 Paper，一条前次产生的 Verifier Error_Reprot 情境库。发动构建方法观察并记录传将要喂送到 LLM 大门口的那长串 Payload：重点关注它是不是完全地利用这些现实现有线索自动合围包裹在了最终的指示内提供利用查寻提示！
-- **核心知识点标注**：Dynamic Context Injection 上下文反查与动态注入术 - 提供有凭有据解决思路所需要的环境要素前缀基础拼接术。
-
-### Task 13: 威严苛刻检验官换代 (`agents/verifier.py` 与 `prompts/verifier.yaml`)
-- **现存代码剖析 (须优先阅读)**：原作者将其设为独霸多层逻辑且硬写分支的一大堆冗沉判别机制环节（参考旧体 `call_verifier`）。现应并流纳回统一化智能架构中。
-- **负责的具体功能**：将 Generator 交过来的解答卷抽丝剥茧。用独立 Regex 挑出 Lemma 段使用其特有的沙盒执行跑 Py 做数算推演。**必须执行针对 `[cite:x]` 的幻觉真实防呆拦截测定**；然后生成强类型路由断言与含有附带完整论述的验证报单。
-- **类名/函数名**：`class VerifierAgent(BaseAgent)`
-- **输入参数与输出结果格式**：
-  - 输入参数：接收前方全流程的完整输出原文本解法。
-  - 输出格式：将内容按规定的 `<verdict>MINOR_FLAW / CORRECT...`，有可复用就提炼入内的 `<verified_lemmas>` 契约返回出解析用的大篇幅长 `str` 回应流。
-- **测试设计**：
-  - **冒烟测试**：赋予一正确解答且无任何引理引用的情形下平稳下达判决流逝。
-  - **功能测试 (真实场景模拟)**：丢进含一个故意缺少一半步骤瞎扯出来的伪理论的 `lemma` 数据同时塞入一被捏造出的幻觉 `[cite:a_fake_path.md]` 不存在路径地址的虚空出处证明；预期拦截机制必定在其执行判决流与 Python 证实途中将其归类列回 `MINOR_FLAW / CRITICAL_FLAW` 类别且一五一十写出是哪处产生了谬误或不可信以备报告产出！
-- **核心知识点标注**：防御式检验法则与枚举状态路由分发。
-
-### Task 14: 漏洞填补修补匠 (`agents/reviser.py` 与 `prompts/reviser.yaml`)
-- **现存代码剖析 (须优先阅读)**：沿袭 `call_reviser` 作派，但弃暗投明利用最新这套拥有自驱多轮重检和拥有自己外围工具能力的特化体系来替代。
-- **负责的具体功能**：当由于一些不足轻重仅需部分重写的时候触发，让它专务于用工具测定某独立区间和提供有底线的不破坏已有核心的重新补出替换工作职能范畴。
-- **输入参数与输出结果格式**：接收 `error_report` 、 `previous_solution` 等等重新反馈修改后的最终文本形式解答长字符串。
-- **测试设计**：
-  - **功能测试 (真实场景模拟)**：传进一个仅有某一行计算写出 2+3=6 的瑕疵结果搭配明说的 Error。让它利用工具核算出它后是否可以以小幅度变工的形式输出正确的 `solution` 并附带新替换内容返回。
-
-### Task 15: 阶段 4 集成测试 (算力单元节点穿引连线)
-- **负责的具体功能**：仅以代码层面断言前线三大业务干将能够进行前后信息流无漏损接抛！不夹涉外界 LLM 和真实模型响应。
-- **测试设计**：
-  - **阶段集成测试**：编写包含手写串流程的代码单元测试，自己准备字符串 A 表示 Generator 已经生成好内容；让 Task 4 的 Parser 将其切开交付发派交给 Verifier ，验证 Verifier 理应返回出特定含有 Error 发送给 Reviser，再由 Reviser 的预组建函数观测是否能够成功全部捕装接收到没有任何字句错丢的关键数据内容。预期不产生任何由于缺少接口兼容的问题导致崩溃。
+1. Phase A：替换旧检索入口 + 状态底座（A10-A14）
+2. Phase B：协议与解析（B20-B23）
+3. Phase C：Agent 化与调度主链替换（C30-C34）
+4. Phase D：Searcher 与 CitationReviewer 子代理（D40-D43）
+5. Phase E：Finalizer 与引用导出（E50-E53）
+6. Phase F：测试、评测、E2E 与最终门禁（F60-F64）
 
 ---
 
-## 阶段 5：控制塔台集结及落幕产出规范 (Orchestrator Heart & Finalizer)
+## 3. 详细任务单（可直接执行）
 
-### Task 16: 专业引用解释映射生成器 (`utils/parsing/reference_builder.py` 与 `finalizer.py` 增强)
-- **现存代码剖析 (须优先阅读)**：参考 `src/core/finalizer.py` 下极度软薄和简陋无为的收尾拼接 `build_final_output` 函数方法体构造。
-- **负责的具体功能**：将之前满篇由于提示词限定而产出的 `关于这一点见[cite:runs/.../a.md]` 等原生态技术痕迹语句彻底转译并抹为人类自然平滑阅读的 `关于这一点见[1]`；通过物理寻址读出我们原 Layer 3 层隐藏保护许久的 Metadata 出处并做漂亮的末尾表单打印展示。
-- **类名/函数名**：`finalize_output_with_references(solution: str, memory: ProblemMemory) -> str`
-- **输入参数与输出结果格式**：
-  - 输入参数：原包含未经处理标注信息的整个结果篇章 `solution`，提供检索根据的源文指针仓库管家。
-  - 输出格式：完成格式翻译和底端拼贴 `## References` 完美打印准备可发表的长段 `str` 输出串。
-- **测试设计**：
-  - **冒烟测试**：丢个光秃秃没标示的文章，预期输出应该如不包含参考文献表单一样的未作影响。
-  - **功能测试 (真实场景模拟)**：传给它这篇充满交杂引用复用的段落："一、参见由于[cite:artifact/papers/a.md]的限制，又依据[cite:artifact/papers/b.md]... 依然[cite:artifact/papers/a.md]" 预期：要求其能够经过映射解析去重将这俩同类的统一标化收拢并返回成标有 `[1]`, `[2]` 且第二次提及又显示回 `[1]` 的精确内容。于文后打印展示相应详细溯源。
-- **核心知识点标注**：`re.sub` 通过引入 CallBack 重调进行引文登记复用计数编号管理置换。
+### Phase A：替换旧检索入口 + 状态底座
 
-### Task 17: 重写驱动系统的跳动脉搏 (`core/orchestrator.py`)
-- **现存代码剖析 (须优先阅读)**：极其有必要地细细精读通览旧版的 `src/core/orchestrator.py` 与用来妥协挂带功能的代理封装件 `src/core/agent.py` (_PipelineAdapter) 间的所有控制耦合流法！
-- **负责的具体功能**：把这所有的全盘架构组装在一起成为能够自行跑动的活物！剥下包袱代码。在此主动去拉起设置所有 Agent 并注入 `ProblemMemory` 提供系统唯一线程级环境供氧输送。依据最外层 `max_turns` 大圈轮换着安排人员下场（生成->解析->验证->写入或驳回找借口重制）。
-- **类名/函数名**：`class Orchestrator:` 内的 `__init__`, 以及最为粗核心的方法 `def run(self, problem_id: str, problem_text: str)`
-- **输入参数与输出结果格式**：
-  - 输入参数：系统启动必备的解题题序 ID 及源主任务指令内容题文结构。
-  - 输出格式：穿出最后阶段通过层层校验过五关斩六将产出的可复现完美学术成文解答字符串！
-- **测试设计**：
-  - **冒烟测试**：用极虚的返回瞬间给与一遍 Correct。
-  - **功能测试 (真实场景模拟)**：不调 LLM；将此管线的类三巨头 Agent 做函数 Fake 化。使其走这条轨迹：第1轮 Generator 答复包含1个正确 Lemma 但整体存在 Error。-> 经过管内 Parser 和 Verifier 并给判定 `MINOR_FLAW` 还要测试它确实指挥 `add_lemma` 落进了盘。-> 被踢到 Reviser 加工。-> 转出通过 `CORRECT` 打破循环；经过最终 Finalizer 落档写存结束。全程追断它的每条历史足迹流是否被老老实实记载了进入。
-- **核心知识点标注**：大主控状态切换流闭壳实现术 - 极其高度内聚调度层而不处理实活干系流分工隔离法。
+#### A10 替换旧检索入口（不归位 web_search）
 
-### Task 18: 阶段 5 体系引擎集成联调冒烟跑图
-- **负责的具体功能**：进行最逼近真章除没真实 API 往外的模拟全链路冲锋演训测试！
-- **测试设计**：
-  - **阶段集成测试**：采用纯断言校验不插手的方式，在本地开发根源以单元测试指令将其跑动启动；观测跑完之后对应的路径之下（即便全假充字）但是否各个规定的表单和层次的存储沙盒都已经老老实实并完完整整不爆乱码的在预先定好的地方存有应生成的痕迹？
+1. 对齐依据：`architecture.md` 1.5（高优先级风险）、`idea.md` 工具层问题描述。
+2. 借鉴来源：AutoResearchClaw（稳定检索链替代旧工具拼接）。
+3. 目的/作用：移除 `src.tools.registry` 对旧 `web_search/wiki_search` 的运行时依赖，改为 Searcher 工具桥接入口。
+4. 输入输出：
+   - 输入：`function_name: str`, `arguments: dict`
+   - 输出：`str`（工具结果或结构化错误）
+5. 内部伪代码：
+   - step1: 删除 registry 中对旧检索模块 import。
+   - step2: 增加 `call_searcher` 占位工具 schema 与执行分发。
+   - step3: 保留数学执行工具与通用错误封装。
+6. 修改文件：
+   - `src/tools/registry.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -c "import src.tools.registry as r; print('ok')"`
+8. 完成标准：导入成功且不再依赖 `src.tools.web_search`、`src.tools.wiki_search`。
+
+#### A11 新建 typed 状态模型
+
+1. 对齐依据：`architecture.md` 1.4、1.6.3；`idea.md` 1.1。
+2. 借鉴来源：ResearchClaw（typed state + 持久化）。
+3. 目的/作用：将状态快照从历史流水中抽离，建立可校验状态模型。
+4. 输入输出：
+   - 输入：状态字典
+   - 输出：`ProblemSnapshot`、`StageSnapshot` 对象与字典互转
+5. 内部伪代码：
+   - step1: 定义最小字段（problem_id, iteration_count, status, last_decision）。
+   - step2: 实现 `to_dict/from_dict`。
+   - step3: 非法字段抛结构化校验异常。
+6. 修改文件：
+   - 新建 `src/memory/state.py`
+   - `src/core/state.py`（桥接或兼容导出）
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_problem_memory.py -k snapshot -q`
+8. 完成标准：状态模型序列化和反序列化通过，类型错误可诊断。
+
+#### A12 ProblemMemory 全量实现
+
+1. 对齐依据：`architecture.md` 1.2、1.3；`idea.md` 1.1、1.2。
+2. 借鉴来源：ResearchClaw（JsonStateStore 思路）。
+3. 目的/作用：建立每题独立存储中枢，统一管理 state/history/artifact。
+4. 输入输出：
+   - 输入：`problem_id`, `state`, `event`, `lemma/paper/error/bib` 内容
+   - 输出：`runs/{problem_id}` 下完整文件结构
+5. 内部伪代码：
+   - step1: `init_dirs` 创建 state/history/artifact 子目录。
+   - step2: `save_state/load_state/merge_state` 原子读写。
+   - step3: `append_event/read_events` 维护事件流。
+   - step4: `add_lemma/add_paper/add_error/save_bibtex` 统一落盘。
+6. 修改文件：
+   - 新建 `src/memory/problem_memory.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_problem_memory.py -q`
+8. 完成标准：每题目录完整、重复写入幂等、无脏写。
+
+#### A13 Orchestrator 接管状态与事件
+
+1. 对齐依据：`architecture.md` 1.2、1.3；`idea.md` 1.1。
+2. 借鉴来源：ResearchClaw（流程推进与状态重算）。
+3. 目的/作用：Orchestrator 成为唯一状态推进与事件写入入口。
+4. 输入输出：
+   - 输入：problem_text 与各 Agent 输出
+   - 输出：每轮 state 快照与 event 增量
+5. 内部伪代码：
+   - step1: run 开始初始化 ProblemMemory。
+   - step2: 每阶段结束写入 event。
+   - step3: 每轮结束写入 state。
+6. 修改文件：
+   - `src/core/orchestrator.py`
+   - `src/core/agent.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_orchestrator_route.py -k persist -q`
+8. 完成标准：success/partial/fail 三类结束路径均有 state/history。
+
+#### A14 日志链路切换到 runs（不保留 data/logs 回退）
+
+1. 对齐依据：`architecture.md` 1.5；`idea.md` 1.1。
+2. 借鉴来源：ResearchClaw（状态与日志统一持久化）。
+3. 目的/作用：将日志读取与构建链路全部迁移至 `runs/{problem_id}`。
+4. 输入输出：
+   - 输入：`problem_id`, `event`
+   - 输出：`runs/{problem_id}/history.jsonl` 与 worklog 输入源
+5. 内部伪代码：
+   - step1: logger 改写到 ProblemMemory。
+   - step2: raw_log_reader 仅解析 runs 路径。
+   - step3: worklog_builder 仅消费 runs 事件流。
+6. 修改文件：
+   - `src/utils/logger.py`
+   - `src/utils/raw_log_reader.py`
+   - `src/utils/worklog_builder.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_infrastructure.py -k log_path -q`
+8. 完成标准：新运行日志仅出现在 runs 路径。
 
 ---
 
-## 阶段 6：端到端真实评测 (E2E Master)
+### Phase B：协议与解析
 
-### Task 19: 实网全架构验证演习打通阻滞 (The Final Run)
-- **负责的具体功能**：此作为最后一个不包含撰定或添写框架组件主体的纯任务执行项（不修改主框架代码除非遇死胡同错处漏招）。仅需要挂好网络 API 使用深思维等具有超高素质的大型智眼用我们从头到脚新拼合出来的心脏实跑一场高光高燃难题演算试炼即可！执行脚本、观测一切、捕出藏在设计死点和盲角的小毛病！
-- **测试设计 (包含任务运行指引)**：
-  - **最终端到端 (E2E) 测试要求必须做到：**
-    1. 使用原先配套存有的 `imobench` 等题类挑个不简单的做实景目标；利用环境下的启动 `main.py --problem_id xyz` 等正式指令起帆！
-    2. 打开 `Debug` 吐放限制。在此试运行全期间：不论好坏工程 LLM 您必须**实时跟踪并摘抄记录大量的中间重要过站流变现象与产物情况**放入您的反馈总结呈文中（包括比如 `history.jsonl` 真如预期输出了没，子 Agent 调起工具时候 Payload 里到底是长什么样子传了没漏等）。
-    3. 碰碰撞墙时刻（绝对会发生，必定例如某个意图没有让大模型听话或者导致了某些不严格字符使得正则崩裂抑或某 API 时限过长警铃长响）：必须记录留档在案并书写出具非常细腻针对此处情况缘由分析判定的**诊治破案探究说明**小结。
-    4. 明确分析清楚究竟是卡在哪儿之后，立马回到之前那些已经“自以为写得很完善”的单档代码模块中（如某个 Regex，哪怕是某个指令说明中的某个用词）再作润色增重小幅度 Fix！然后反反复复在此轮回。
-    5. 一路磕绊披除修整直致在运行结束后；亲眼见证 `runs/xyz` 中赫然满目琳琅排列着我们那优美的三层 Lemma 与搜研 Paper。最终生成了一篇含出处底角批注无半点差错的 Final.md 正统全篇章！完满达成并写个漂亮的胜赛长书复命。
-- **核心知识点标注**：大架构落脚实践下的 Debug Triage / Root Cause Analysis 闭环机置实战处理应修与能力论证。个指令说明中的某个用词）再作润色增重小幅度 Fix！然后反反复复在此轮回。
-    5. 一路磕绊披除修整直致在运行结束后；亲眼见证 `runs/xyz` 中赫然满目琳琅排列着我们那优美的三层 Lemma 与搜研 Paper。最终生成了一篇含出处底角批注无半点差错的 Final.md 正统全篇章！完满达成并写个漂亮的胜赛长书复命。
-- **核心知识点标注**：大架构落脚实践下的 Debug Triage / Root Cause Analysis 闭环机置实战处理应修与能力论证。
+#### B20 多标签解析与引用解析
+
+1. 对齐依据：`architecture.md` 1.4；`idea.md` 1.2。
+2. 借鉴来源：EvoScientist（协议字段独立解析）。
+3. 目的/作用：支持多 lemma、verified_lemmas、cite、citation_review。
+4. 输入输出：
+   - 输入：LLM 文本输出
+   - 输出：`lemmas[]`, `verified_lemmas[]`, `citations[]`, `citation_review`
+5. 内部伪代码：
+   - step1: `extract_xml_tags(tag)` 用 `finditer` 抓多块。
+   - step2: 解析 `<lemma>` 和 `<verified_lemmas>`。
+   - step3: 解析 `[cite:path]` 与 `<citation_review>`。
+6. 修改文件：
+   - `src/utils/parser.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_parser_contract.py -q`
+8. 完成标准：混合样本可解析，坏块走可诊断错误。
+
+#### B21 Prompt 合约固化
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2。
+2. 借鉴来源：EvoScientist（提示词驱动的结构化动作）。
+3. 目的/作用：确保 Generator/Verifier/Reviser 输出满足机器可解析契约。
+4. 输入输出：
+   - 输入：problem + context
+   - 输出：包含必填标签的结构化文本
+5. 内部伪代码：
+   - step1: 定义必填标签清单。
+   - step2: 缺失标签触发一次格式修复重试。
+   - step3: 连续失败写 parse_error。
+6. 修改文件：
+   - `config/prompts.yaml`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_pipeline_contracts.py -k prompt -q`
+8. 完成标准：缺标签时有稳定失败语义，不出现静默成功。
+
+#### B22 解析错误分类与路由
+
+1. 对齐依据：`architecture.md` 1.4；`idea.md` 2.2。
+2. 借鉴来源：EvoScientist（异常结构化）。
+3. 目的/作用：解析失败变成路由可消费状态，而非随机异常中断。
+4. 输入输出：
+   - 输入：原始文本、解析异常
+   - 输出：`parse_error_code`, `failure_reason`
+5. 内部伪代码：
+   - step1: classify 为 invalid_verdict/malformed_tag/missing_solution。
+   - step2: orchestrator 根据错误码决定重试或切换节点。
+6. 修改文件：
+   - `src/utils/parser.py`
+   - `src/core/orchestrator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_orchestrator_route.py -k parse_error -q`
+8. 完成标准：解析失败路径均可重现并可追踪。
+
+#### B23 分层读取工具
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.1、3.1。
+2. 借鉴来源：AutoResearchClaw（分层内容消费）。
+3. 目的/作用：Agent 按需加载 Layer2/Layer3，避免长文本一次性注入。
+4. 输入输出：
+   - 输入：`path: str`, `layer: int`
+   - 输出：层文本或结构化路径错误
+5. 内部伪代码：
+   - step1: 校验 path 必须位于 runs/{problem_id}/artifact 内。
+   - step2: 解析三层 markdown。
+   - step3: 返回目标层内容。
+6. 修改文件：
+   - 新建 `src/tools/artifact_reader.py`
+   - `src/tools/registry.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_parser_contract.py -k layer_reader -q`
+8. 完成标准：合法路径可读，路径穿越被拒绝。
+
+---
+
+### Phase C：Agent 化与调度主链替换
+
+#### C30 BaseAgent 运行时骨架
+
+1. 对齐依据：`architecture.md` 1.6.1；`idea.md` 2.2。
+2. 借鉴来源：EvoScientist（动作循环与限次）。
+3. 目的/作用：统一 Agent 的阶段记忆、工具循环与上限控制。
+4. 输入输出：
+   - 输入：`payload`, `tools`, `max_tool_rounds`
+   - 输出：阶段最终文本
+5. 内部伪代码：
+   - step1: `reset_stage_memory()`。
+   - step2: while rounds < max: chat -> tool_call -> append_result。
+   - step3: 无 tool_call 返回最终文本。
+6. 修改文件：
+   - 新建 `src/agents/base.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_searcher_dedup.py -k base_agent -q`
+8. 完成标准：阶段内记忆可见、阶段间记忆清空、超限可终止。
+
+#### C31 GeneratorAgent 替换旧生成函数
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2、2.2。
+2. 借鉴来源：EvoScientist（Agent 主循环）。
+3. 目的/作用：从函数式生成切换为 Agent 对象执行。
+4. 输入输出：
+   - 输入：problem、layer1 summaries、error lessons
+   - 输出：含 `<solution>` 和 `<lemma>` 的结构化文本
+5. 内部伪代码：
+   - step1: 拼接上下文。
+   - step2: 调用 BaseAgent.run。
+   - step3: 校验 lemma 与 cite 约束。
+6. 修改文件：
+   - 新建 `src/agents/generator.py`
+   - `src/core/orchestrator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_pipeline_contracts.py -k generator -q`
+8. 完成标准：旧 `call_generator` 不再是主入口。
+
+#### C32 VerifierAgent 替换旧验证函数
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2。
+2. 借鉴来源：EvoScientist + AutoResearchClaw（结构化输出 + 审查链）。
+3. 目的/作用：输出统一 verdict/verification/verified_lemmas/citation_review。
+4. 输入输出：
+   - 输入：problem + solution
+   - 输出：结构化验证文本
+5. 内部伪代码：
+   - step1: 主链验证。
+   - step2: `<lemma>` 验证与筛选。
+   - step3: 有 cite 则触发 CitationReviewer。
+   - step4: 生成统一输出标签。
+6. 修改文件：
+   - 新建 `src/agents/verifier.py`
+   - `src/core/orchestrator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_pipeline_contracts.py -k verifier -q`
+8. 完成标准：`verified_lemmas` 可被落盘且路由稳定。
+
+#### C33 ReviserAgent 替换旧修订函数
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 2.2。
+2. 借鉴来源：EvoScientist（有状态阶段执行）。
+3. 目的/作用：定点修补，不整稿重写。
+4. 输入输出：
+   - 输入：problem、previous_solution、verification_report
+   - 输出：修订后的 `<solution>`
+5. 内部伪代码：
+   - step1: 标记问题段。
+   - step2: 保留正确段。
+   - step3: 仅替换缺陷段。
+6. 修改文件：
+   - 新建 `src/agents/reviser.py`
+   - `src/core/orchestrator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_pipeline_contracts.py -k reviser -q`
+8. 完成标准：修订范围可控，正确段不回归。
+
+#### C34 调度主链替换（去掉旧适配主链）
+
+1. 对齐依据：`architecture.md` 1.3；`idea.md` 2.2。
+2. 借鉴来源：EvoScientist（编排与执行解耦）。
+3. 目的/作用：让 Orchestrator 直接调用 Agent 对象，旧 pipeline 不再作为主执行链。
+4. 输入输出：
+   - 输入：problem_id、problem_text
+   - 输出：final state + final output
+5. 内部伪代码：
+   - step1: generator.run -> parser。
+   - step2: verifier.run -> route。
+   - step3: reviser 或 generator 循环。
+   - step4: finalizer 收敛输出。
+6. 修改文件：
+   - `src/core/orchestrator.py`
+   - `src/core/agent.py`
+   - `src/core/pipeline.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_orchestrator_route.py -q`
+8. 完成标准：主流程不再依赖 `_PipelineAdapter`。
+
+---
+
+### Phase D：Searcher 与 CitationReviewer 子代理
+
+#### D40 SearcherAgent 全链路实现
+
+1. 对齐依据：`architecture.md` 1.2、1.6.2；`idea.md` 1.2、2.2。
+2. 借鉴来源：AutoResearchClaw（稳定检索链）。
+3. 目的/作用：形成可复用检索子代理，输出三层 papers artifact。
+4. 输入输出：
+   - 输入：`query` 或 `query_bundle`
+   - 输出：`papers[]`（layer1/layer2/layer3 + source meta）
+5. 内部伪代码：
+   - step1: expand_queries。
+   - step2: multi_source_search。
+   - step3: dedup(doi > arxiv_id > normalized_title)。
+   - step4: extract + summarize + add_paper。
+6. 修改文件：
+   - 新建 `src/agents/searcher.py`
+   - 新建 `src/tools/search.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_searcher_dedup.py -q`
+8. 完成标准：重复文献不重复落盘，输出结构稳定。
+
+#### D41 Generator -> Searcher 桥接工具
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2。
+2. 借鉴来源：EvoScientist（主 Agent 委派子代理）。
+3. 目的/作用：让 Generator 在工具循环中按需调用 Searcher。
+4. 输入输出：
+   - 输入：`query: str`
+   - 输出：检索摘要 + artifact 路径
+5. 内部伪代码：
+   - step1: registry 注册 `call_searcher` schema。
+   - step2: 调用 SearcherAgent。
+   - step3: 返回简短结果供下一轮推理。
+6. 修改文件：
+   - `src/tools/registry.py`
+   - `src/agents/generator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_stage_integration.py -k generator_searcher -q`
+8. 完成标准：Generator 能触发 Searcher 并继续完成阶段输出。
+
+#### D42 CitationReviewer 子代理实现与按需触发
+
+1. 对齐依据：`architecture.md` 1.2、1.6.2；`idea.md` 1.2。
+2. 借鉴来源：AutoResearchClaw（级联引用核验）。
+3. 目的/作用：将 citation 审查纳入标准输出链。
+4. 输入输出：
+   - 输入：`cites[]`, `claim_spans[]`
+   - 输出：`citation_review {summary, items, fail_count}`
+5. 内部伪代码：
+   - step1: 每条 cite 做 path/meta/claim 一致性检查。
+   - step2: 汇总通过率与失败项。
+   - step3: 回传 Verifier 输出。
+6. 修改文件：
+   - 新建 `src/agents/citation_reviewer.py`
+   - `src/agents/verifier.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_citation_review.py -q`
+8. 完成标准：有 cite 必有 citation_review；无 cite 不触发审查。
+
+#### D43 软门控路由落地
+
+1. 对齐依据：`architecture.md` 3.5；`idea.md` 1.1。
+2. 借鉴来源：AutoResearchClaw（审查结果与主流程解耦）。
+3. 目的/作用：审查失败只记 warning，不阻断主流程。
+4. 输入输出：
+   - 输入：`citation_review.fail_count`
+   - 输出：warning 事件 + final warning 摘要
+5. 内部伪代码：
+   - step1: if fail_count > 0 append warning event。
+   - step2: 路由不改为 fail。
+   - step3: finalizer 汇总 warning。
+6. 修改文件：
+   - `src/core/orchestrator.py`
+   - `src/core/finalizer.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_orchestrator_route.py -k citation -q`
+8. 完成标准：warning 可追踪且流程可收敛。
+
+---
+
+### Phase E：Finalizer 与引用导出
+
+#### E50 引用构建器
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2。
+2. 借鉴来源：AutoResearchClaw（引用核验与导出链）。
+3. 目的/作用：把 `[cite:path]` 转为 `[1][2]` 并生成 references。
+4. 输入输出：
+   - 输入：`solution_text`, `problem_memory`
+   - 输出：`converted_text`, `references[]`, `missing_warnings[]`
+5. 内部伪代码：
+   - step1: 按首次出现编号。
+   - step2: 用 Layer3 元信息生成引用条目。
+   - step3: 缺失路径写 warning。
+6. 修改文件：
+   - 新建 `src/utils/reference_builder.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_finalizer_reference.py -k builder -q`
+8. 完成标准：重复 cite 编号一致。
+
+#### E51 Finalizer 模板重构
+
+1. 对齐依据：`architecture.md` 1.3（final 阶段）；`idea.md` 1.2（References）。
+2. 借鉴来源：AutoResearchClaw（最终产物组织）。
+3. 目的/作用：统一输出正文 + References + Citation Warnings。
+4. 输入输出：
+   - 输入：`solution`, `references`, `warning_summary`, `status`
+   - 输出：统一 final markdown
+5. 内部伪代码：
+   - step1: 替换 cite。
+   - step2: 追加 References。
+   - step3: 追加 Citation Warnings。
+6. 修改文件：
+   - `src/core/finalizer.py`
+   - `src/core/orchestrator.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_finalizer_reference.py -k final_output -q`
+8. 完成标准：success/partial/fail 模板统一。
+
+#### E52 BibTeX 导出
+
+1. 对齐依据：`architecture.md` 1.2；`idea.md` 1.2。
+2. 借鉴来源：AutoResearchClaw（BibTeX 清洗与输出）。
+3. 目的/作用：输出可复用的 `citations.bib`。
+4. 输入输出：
+   - 输入：`references[]`
+   - 输出：`artifact/citations.bib`
+5. 内部伪代码：
+   - step1: reference -> bib entry。
+   - step2: 缺失字段占位。
+   - step3: 保存到 ProblemMemory。
+6. 修改文件：
+   - `src/utils/reference_builder.py`
+   - `src/memory/problem_memory.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_finalizer_reference.py -k bibtex -q`
+8. 完成标准：bib 文件可生成且格式可解析。
+
+#### E53 旧 final 分支清理
+
+1. 对齐依据：`architecture.md` 3.1；反馈要求（替代后不保留回退）。
+2. 借鉴来源：EvoScientist（保持主链清晰，减少分支漂移）。
+3. 目的/作用：清理旧输出分支，避免双逻辑并存。
+4. 输入输出：
+   - 输入：统一 final 数据结构
+   - 输出：单一路径 final 结果
+5. 内部伪代码：
+   - step1: 删除旧模板分支。
+   - step2: 统一调用 reference_builder。
+   - step3: 写最终输出。
+6. 修改文件：
+   - `src/core/finalizer.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_finalizer_reference.py -q`
+8. 完成标准：final 输出只有一条主链。
+
+---
+
+### Phase F：测试、评测、E2E 与最终门禁
+
+#### F60 单元测试（memory/parser/protocol）
+
+1. 对齐依据：`architecture.md` 3.9；`idea.md` 可验证要求。
+2. 借鉴来源：ResearchClaw（状态层可测试性）。
+3. 目的/作用：确保底座与协议稳定。
+4. 输入输出：
+   - 输入：固定样本与临时目录
+   - 输出：测试断言
+5. 内部伪代码：
+   - step1: memory 写读。
+   - step2: parser 多标签解析。
+   - step3: 协议异常分支。
+6. 修改文件：
+   - 新建 `tests/test_problem_memory.py`
+   - 新建 `tests/test_parser_contract.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_problem_memory.py tests/test_parser_contract.py -q`
+8. 完成标准：两类单测全绿。
+
+#### F61 集成测试（orchestrator/agent/subagent）
+
+1. 对齐依据：`architecture.md` 1.3；`idea.md` 2.2。
+2. 借鉴来源：EvoScientist + AutoResearchClaw（编排+子代理链路）。
+3. 目的/作用：验证主路由与子代理调用链联通。
+4. 输入输出：
+   - 输入：mock llm/tool 输出
+   - 输出：路由断言与落盘副作用断言
+5. 内部伪代码：
+   - step1: 覆盖 CORRECT/MINOR/CRITICAL。
+   - step2: 覆盖 generator->searcher。
+   - step3: 覆盖 verifier->citation_reviewer。
+6. 修改文件：
+   - 新建 `tests/test_orchestrator_route.py`
+   - 新建 `tests/test_stage_integration.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest tests/test_orchestrator_route.py tests/test_stage_integration.py -q`
+8. 完成标准：主路由与子链路全通过。
+
+#### F62 评测脚本切换到 runs
+
+1. 对齐依据：`architecture.md` 3.7 P2；反馈要求（不保留回退）。
+2. 借鉴来源：AutoResearchClaw（可复现实验产物组织）。
+3. 目的/作用：让 benchmark 只依赖新目录结构。
+4. 输入输出：
+   - 输入：dataset/count/max_turns
+   - 输出：summary json + 新指标
+5. 内部伪代码：
+   - step1: resolve_run_log_path 仅解析 runs。
+   - step2: 统计 lemma_accept_rate/citation_warning_rate。
+   - step3: 输出结果文件。
+6. 修改文件：
+   - `scripts/run_imobench.py`
+   - `scripts/run_proofbench_advanced.py`
+   - `src/utils/raw_log_reader.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe scripts/run_imobench.py --dataset answerbench --count 2 --max-turns 2`
+8. 完成标准：脚本不再读取 `data/logs`。
+
+#### F63 实时 E2E 监控对齐 runs
+
+1. 对齐依据：`architecture.md` 3.9；`idea.md` 调试可追踪要求。
+2. 借鉴来源：ResearchClaw（可观测视图与状态跟踪）。
+3. 目的/作用：实时监控直接追踪 runs 事件流。
+4. 输入输出：
+   - 输入：`input_file`, `max_turns`
+   - 输出：tracking markdown（final_status/warning_count/bug_count）
+5. 内部伪代码：
+   - step1: 启动 main。
+   - step2: 轮询 runs 下 jsonl。
+   - step3: 汇总 warning 与 bug。
+6. 修改文件：
+   - `tests/realtime_e2e_monitor.py`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe tests/realtime_e2e_monitor.py --input tasks_v1.md --max-turns 2`
+8. 完成标准：tracking 文件包含最终状态与信号统计。
+
+#### F64 最终门禁与缺陷闭环
+
+1. 对齐依据：`architecture.md` 3.9；`idea.md` 闭环修复要求。
+2. 借鉴来源：三参考项目共同的“可复现+可回溯”原则。
+3. 目的/作用：确认系统可运行、可回归、可复现。
+4. 输入输出：
+   - 输入：全量测试 + 小规模 benchmark
+   - 输出：门禁结果 + 修复记录
+5. 内部伪代码：
+   - step1: 执行 pytest 全量。
+   - step2: 执行 proofbench 小样本。
+   - step3: 更新 `docs/e2e_fix_log.md`。
+6. 修改文件：
+   - 新建 `docs/e2e_fix_log.md`
+7. 验收命令：
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe -m pytest -q`
+   - `d:/Project/AletheiaReproduction/.venv/Scripts/python.exe scripts/run_imobench.py --dataset proofbench --count 2 --max-turns 2`
+8. 完成标准：测试全绿，门禁清单全部通过。
+
+---
+
+## 4. 执行纪律
+
+1. 每完成一个任务，必须同时提交对应测试。
+2. 未通过当前任务验收，不得进入下一任务。
+3. 每次提交必须写清输入、输出、失败场景、边界条件。
+4. 禁止继续引入“回退/降级路径”并行维持旧实现。

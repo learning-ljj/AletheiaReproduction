@@ -9,6 +9,9 @@ This module keeps only the stable retrieval core:
 It only depends on the standard library plus `shared_models.py`.
 """
 
+# 中文说明：
+# - 本模块实现一个轻量、多源且稳健的文献检索核心，便于迁移到任意 agent 框架。
+# - 主要功能包括查询扩展、按源缓存、限流/熔断以及 DOI/arXiv/标题的去重逻辑。
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,9 +29,11 @@ from docs.analysis.migration_core.shared_models import Author, Paper
 
 
 # Keep cache local to the module so migration does not depend on repo-specific dirs.
+# 本地缓存根目录，模块内部维护，便于在不同工程中无痛迁移和离线回退。
 CACHE_ROOT = Path(".migration_cache") / "literature"
 
 # Search suffixes copied from the repo idea: they improve retrieval recall.
+# 用于扩展查询的尾缀（如 survey / review），能在某些任务中提高召回效果。
 SEARCH_SUFFIXES = [
     "survey",
     "review",
@@ -38,6 +43,7 @@ SEARCH_SUFFIXES = [
 ]
 
 # A tiny stopword list is enough for query shortening.
+# 简短的停用词集合，用于从长句中抽取有信息量的关键词以生成短查询。
 STOPWORDS = {
     "a",
     "an",
@@ -54,6 +60,7 @@ STOPWORDS = {
 }
 
 # Cache TTL intentionally mirrors the original repo's strategy.
+# 为不同来源设置不同的缓存有效期，避免长期使用旧数据污染结果。
 TTL_BY_SOURCE = {
     "openalex": timedelta(days=3),
     "semantic_scholar": timedelta(days=3),
@@ -61,6 +68,7 @@ TTL_BY_SOURCE = {
 }
 
 # A small per-source request spacing reduces rate-limit bursts.
+# 每个来源配置最小请求间隔，用于降低短时间内触发限流的概率。
 REQUEST_INTERVAL_SECONDS = {
     "openalex": 1.0,
     "semantic_scholar": 1.5,
@@ -68,9 +76,11 @@ REQUEST_INTERVAL_SECONDS = {
 }
 
 # Simple in-memory request bookkeeping.
+# 记录每个来源上一次请求的时间戳，用于实现最小请求间隔。
 _LAST_REQUEST_AT: dict[str, float] = {}
 
 # Simple circuit breaker state for stricter sources.
+# 基于失败次数的简易熔断器状态（用于在多次 429/错误后短暂阻断对某些来源的请求）。
 _BREAKER_STATE: dict[str, dict[str, float | int]] = {
     "semantic_scholar": {"failures": 0, "open_until": 0.0},
     "arxiv": {"failures": 0, "open_until": 0.0},
@@ -92,6 +102,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# 规范化文本以便做模糊相等比较（用于去重、相似度计算等）。
 def normalize_text(text: str) -> str:
     """Normalize text for fuzzy equality checks."""
     lowered = text.lower()
@@ -99,6 +110,7 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", lowered).strip()
 
 
+# 从长句中抽取有信息量的关键词，用于构造短查询。
 def extract_keywords(text: str, max_keywords: int = 6) -> list[str]:
     """Keep only informative words from a long topic sentence."""
     words = re.findall(r"[A-Za-z0-9]+", text.lower())
@@ -106,6 +118,7 @@ def extract_keywords(text: str, max_keywords: int = 6) -> list[str]:
     return keywords[:max_keywords]
 
 
+# 把长的主题描述缩短为对检索 API 更友好的短查询（保留高信息量词与已识别的尾缀）。
 def shorten_query(query: str, max_keywords: int = 6) -> str:
     """Convert a long topic description into a short API-friendly query."""
     query = query.strip()
@@ -120,6 +133,7 @@ def shorten_query(query: str, max_keywords: int = 6) -> str:
     return f"{shortened} {suffix}".strip() or query
 
 
+# 生成扩展查询集合：包含短查询、主题的短化、以及带尾缀的变体，去重后返回。
 def expand_queries(queries: list[str], topic: str) -> list[str]:
     """Generate a compact set of useful search variants."""
     seeds = list(queries) if queries else [topic]
@@ -161,6 +175,7 @@ def cache_path(query: str, source: str, limit: int, year_min: int | None) -> Pat
     return CACHE_ROOT / f"{cache_key(query, source, limit, year_min)}.json"
 
 
+# 从磁盘读取缓存并按来源的 TTL 检查是否仍然有效，失效或损坏时返回 None。
 def cache_get(query: str, source: str, limit: int, year_min: int | None) -> list[Paper] | None:
     """Read cache if it exists and is still within the source TTL."""
     # 先确保缓存目录存在，这样后续路径计算不会出错。
@@ -191,6 +206,7 @@ def cache_get(query: str, source: str, limit: int, year_min: int | None) -> list
     return [Paper.from_dict(row) for row in rows if isinstance(row, dict)]
 
 
+# 将在线成功的检索结果写入缓存，以便后续在网络不可用时回退使用。
 def cache_put(query: str, source: str, limit: int, year_min: int | None, papers: list[Paper]) -> None:
     """Write successful online results to cache for later fallback."""
     ensure_cache_dir()
@@ -240,6 +256,7 @@ def breaker_record_failure(source: str, retry_after_seconds: float = 60.0) -> No
         state["open_until"] = time.time() + retry_after_seconds
 
 
+# 执行 HTTP JSON 请求的统一封装，包含限流、重试与简易熔断逻辑，保护第三方 API。
 def request_json(url: str, *, headers: dict[str, str] | None = None, source: str, retries: int = 2) -> Any:
     """Perform a JSON HTTP request with basic retry and breaker support."""
     # 如果熔断器处于打开状态，直接失败，避免继续打爆 API。
@@ -279,7 +296,10 @@ def request_json(url: str, *, headers: dict[str, str] | None = None, source: str
 
 
 def build_openalex_paper(item: dict[str, Any]) -> Paper:
-    """Map one OpenAlex work record to the shared Paper model."""
+    """Map one OpenAlex work record to the shared Paper model.
+
+    中文说明：将 OpenAlex 的 JSON 字段映射为共享的 `Paper`，只提取常用且稳定的字段。
+    """
     authors = []
     for authorship in item.get("authorships", []) or []:
         author_name = (((authorship or {}).get("author") or {}).get("display_name") or "").strip()
@@ -304,7 +324,10 @@ def build_openalex_paper(item: dict[str, Any]) -> Paper:
 
 
 def search_openalex(query: str, limit: int, year_min: int | None) -> list[Paper]:
-    """Search OpenAlex as the default broad-coverage source."""
+    """Search OpenAlex as the default broad-coverage source.
+
+    中文说明：构建查询参数，调用 `request_json`，并把结果映射为 `Paper` 列表。
+    """
     params = {
         "search": query,
         "per-page": str(limit),
@@ -319,7 +342,10 @@ def search_openalex(query: str, limit: int, year_min: int | None) -> list[Paper]
 
 
 def build_semantic_scholar_paper(item: dict[str, Any]) -> Paper:
-    """Map Semantic Scholar JSON into the shared Paper model."""
+    """Map Semantic Scholar JSON into the shared Paper model.
+
+    中文说明：从 Semantic Scholar 的字段中提取 title/abstract/authors/ids 等。
+    """
     authors = [Author(str(author.get("name", "")).strip()) for author in item.get("authors", []) if author.get("name")]
     external_ids = item.get("externalIds") or {}
     url = str(item.get("url", "") or "")
@@ -339,7 +365,10 @@ def build_semantic_scholar_paper(item: dict[str, Any]) -> Paper:
 
 
 def search_semantic_scholar(query: str, limit: int, year_min: int | None, api_key: str | None) -> list[Paper]:
-    """Search Semantic Scholar when the caller wants richer abstract metadata."""
+    """Search Semantic Scholar when the caller wants richer abstract metadata.
+
+    中文说明：支持可选的 API key，并把返回的 `data` 字段映射为 `Paper`。
+    """
     params = {
         "query": query,
         "limit": str(limit),
@@ -355,7 +384,10 @@ def search_semantic_scholar(query: str, limit: int, year_min: int | None, api_ke
 
 
 def build_arxiv_paper(entry_xml: str) -> Paper:
-    """Extract a few useful fields from one arXiv Atom entry."""
+    """Extract a few useful fields from one arXiv Atom entry.
+
+    中文说明：使用正则从 Atom XML 片段提取 title/summary/author/id/pdf 等字段，避免依赖完整 XML 解析库。
+    """
     title_match = re.search(r"<title>(.*?)</title>", entry_xml, flags=re.S)
     summary_match = re.search(r"<summary>(.*?)</summary>", entry_xml, flags=re.S)
     id_match = re.search(r"<id>https?://arxiv.org/abs/(.*?)</id>", entry_xml)
@@ -384,7 +416,10 @@ def build_arxiv_paper(entry_xml: str) -> Paper:
 
 
 def search_arxiv(query: str, limit: int, year_min: int | None) -> list[Paper]:
-    """Search arXiv using the Atom API and a lightweight XML parser."""
+    """Search arXiv using the Atom API and a lightweight XML parser.
+
+    中文说明：直接调用 arXiv 的 Atom 接口并用正则提取 <entry>，实现上更简单但足够实用。
+    """
     params = {
         "search_query": "all:" + query,
         "start": "0",
@@ -407,7 +442,10 @@ def search_arxiv(query: str, limit: int, year_min: int | None) -> list[Paper]:
 
 
 def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
-    """Merge duplicates with a DOI-first heuristic copied from the repo."""
+    """Merge duplicates with a DOI-first heuristic copied from the repo.
+
+    中文说明：优先使用 DOI 去重；无 DOI 则使用 arXiv id；最后回退到标准化后的标题。
+    """
     seen: set[str] = set()
     unique: list[Paper] = []
     for paper in papers:
@@ -422,7 +460,10 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
 
 
 def search_one_source(query: str, source: str, config: SearchConfig) -> list[Paper]:
-    """Search one source and fall back to cache when the online request fails."""
+    """Search one source and fall back to cache when the online request fails.
+
+    中文说明：优先尝试在线查询；若成功则更新缓存；若失败且有缓存则回退到缓存结果。
+    """
     # 先读取缓存，但只有在线请求失败时才回退使用。
     cached = cache_get(query, source, config.limit_per_query, config.year_min)
     try:
@@ -454,6 +495,7 @@ def search_papers_multi_query(queries: list[str], *, topic: str, config: SearchC
     """Search all sources for all expanded queries and return deduplicated results."""
     all_papers: list[Paper] = []
     # 先扩展查询词，保证短 query / survey / benchmark 等变体能一起召回。
+    # 中文说明：对每个扩展后的查询按配置中的每个来源进行检索，然后整合、去重并按简单规则排序。
     for query in expand_queries(queries, topic):
         for source in config.sources:
             try:

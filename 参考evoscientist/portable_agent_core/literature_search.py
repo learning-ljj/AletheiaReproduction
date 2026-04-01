@@ -5,6 +5,11 @@ This module mirrors the EvoScientist idea of:
 2. fetch URLs later,
 3. keep tool boundaries simple,
 but it removes the DeepAgents / LangChain dependency chain.
+
+中文说明：
+该模块实现了一个低耦合的文献检索层，支持多提供者的回退策略、结果去重、
+以及基于简单启发式的排序。核心思路是先做检索（只返回搜索结果元数据），
+后续在需要时再去抓取 URL 内容，从而将检索与抽取职责分离。
 """
 
 from __future__ import annotations
@@ -21,10 +26,13 @@ from .shared_types import Citation, SearchHit, SearchProvider
 @dataclass(slots=True)
 class SearchBundle:
     # Final query after normalization or repair.
+    # 最终用于检索的 query（经过标准化或修复）。
     query: str
     # Stable list of deduplicated hits.
+    # 去重后的命中列表（稳定顺序，便于调试）。
     hits: list[SearchHit]
     # Provider names help explain fallback behavior.
+    # 使用过的 provider 名称列表（按尝试顺序）。
     providers_used: list[str]
 
 
@@ -87,6 +95,10 @@ def normalize_query(query: str) -> str:
     return cleaned
 
 
+# 本模块还包含若干用于修复、去重与排名的辅助函数，便于在多 provider 场景下
+# 提高检索稳定性与可解释性。
+
+
 def build_query_repair(
     current_input: dict[str, Any],
     issue: ValidationIssue,
@@ -115,6 +127,11 @@ def build_query_repair(
         **current_input,
         "query": shorter_query,
     }
+
+
+# MultiProviderLiteratureSearch 是本模块的核心：它在多个 provider 之间按优先级
+# 轮流尝试检索，利用重试策略包裹 provider 调用，并在发现结果为空时运行
+# 自我修正（self-correction）回路，尝试用更保守的查询重试。
 
 
 class MultiProviderLiteratureSearch:
@@ -229,6 +246,10 @@ def deduplicate_hits(hits: list[SearchHit]) -> list[SearchHit]:
         deduped.append(hit)
 
     return deduped
+
+
+# 轻量排序：在 provider 给出的 score 基础上，偏好学术类资源（DOI/ArXiv 等），
+# 以提升文献检索场景下的相关性。
 
 
 def rank_hits(hits: list[SearchHit]) -> list[SearchHit]:

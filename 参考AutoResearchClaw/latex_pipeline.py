@@ -6,6 +6,10 @@ Instead, this module keeps the reusable core:
 2. Markdown-to-LaTeX conversion.
 3. Local style-file copying.
 4. pdflatex / bibtex compilation with error capture.
+
+中文说明：
+- 本模块提供把简化的 Markdown 论文草稿转换为可编译的 LaTeX 的工具链，
+    包括模板选择、行内 markdown 转 LaTeX、代码/图片处理，以及可选的 pdflatex 编译并收集错误信息。
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from docs.analysis.migration_core.shared_models import CompileResult, Conference
 
 
 # Keep template configuration local and small so migration stays simple.
+# 模板配置保持精简并内置少量轻量模板，方便直接迁移使用或快速定制。
 TEMPLATES: dict[str, ConferenceTemplate] = {
     "generic": ConferenceTemplate(
         name="generic",
@@ -67,6 +72,8 @@ def get_template(name: str) -> ConferenceTemplate:
         raise KeyError(f"Unknown template: {name}")
     return TEMPLATES[name]
 
+# 获取内置模板的便捷函数，遇到未知模板会抛出异常以便快速发现配置错误。
+
 
 def sanitize_latex(text: str) -> str:
     """Escape characters that would otherwise break LaTeX parsing."""
@@ -85,6 +92,8 @@ def sanitize_latex(text: str) -> str:
         output = output.replace(source, target)
     return output
 
+# 对可能破坏 LaTeX 语法的字符做转义，供行内文本与标题等使用。
+
 
 def convert_inline_markdown(text: str) -> str:
     """Convert a small subset of inline markdown into LaTeX commands."""
@@ -94,11 +103,15 @@ def convert_inline_markdown(text: str) -> str:
     text = re.sub(r"\[([A-Za-z0-9:_-]+)\]", r"\\cite{\1}", text)
     return text
 
+# 将常见的行内 Markdown 标记（code / bold / italic / cite key）转换为 LaTeX 对应命令。
+
 
 def extract_title(markdown_text: str) -> str:
     """Use the first H1 as paper title, or fall back to a generic title."""
     match = re.search(r"^#\s+(.+)$", markdown_text, flags=re.M)
     return match.group(1).strip() if match else "Untitled Paper"
+
+# 提取标题：以第一个 H1 作为论文标题，找不到则返回 "Untitled Paper"。
 
 
 def extract_abstract(markdown_text: str) -> str:
@@ -108,6 +121,8 @@ def extract_abstract(markdown_text: str) -> str:
         return ""
     abstract = match.group(1).strip()
     return convert_inline_markdown(sanitize_latex(re.sub(r"\n+", " ", abstract)))
+
+# 抽取摘要：寻找第一个 "## Abstract" 段落并作为摘要，做行内标记转换与转义。
 
 
 def split_blocks(markdown_text: str) -> list[str]:
@@ -132,6 +147,8 @@ def split_blocks(markdown_text: str) -> list[str]:
     if current:
         blocks.append("\n".join(current).strip())
     return [block for block in blocks if block]
+
+# 将 Markdown 文本切分为段落（或围栏代码块），便于逐块渲染为 LaTeX。
 
 
 def render_block(block: str) -> str:
@@ -167,6 +184,8 @@ def render_block(block: str) -> str:
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     return paragraph + "\n"
 
+# 将单个块（段落 / 标题 / 图片 / 代码块）渲染为 LaTeX 对应结构。
+
 
 def build_body(markdown_text: str) -> str:
     """Convert the whole markdown body except title and abstract."""
@@ -187,6 +206,8 @@ def build_body(markdown_text: str) -> str:
             rendered.append(rendered_block)
     return "\n\n".join(rendered)
 
+# 将全文的主体部分逐块渲染为 LaTeX（跳过标题与摘要部分），组合为最终正文文本。
+
 
 def render_preamble(template: ConferenceTemplate, title: str, authors: Iterable[str]) -> str:
     """Render the top of paper.tex from template metadata."""
@@ -201,6 +222,8 @@ def render_preamble(template: ConferenceTemplate, title: str, authors: Iterable[
         "\\maketitle\n"
     )
 
+# 渲染 LaTeX 文档的前导部分：文档类、preamble、标题与作者行。
+
 
 def render_footer(template: ConferenceTemplate, bib_file: str) -> str:
     """Render the bibliography footer and document end marker."""
@@ -210,6 +233,8 @@ def render_footer(template: ConferenceTemplate, bib_file: str) -> str:
         footer.append(f"\\bibliography{{{bib_file}}}")
     footer.append("\\end{document}")
     return "\n".join(footer) + "\n"
+
+# 渲染文档尾部，包含参考文献样式和 \end{document}。
 
 
 def markdown_to_latex(
@@ -234,6 +259,8 @@ def markdown_to_latex(
     parts.append(render_footer(template, bib_file))
     return "\n".join(part for part in parts if part).strip() + "\n"
 
+# 主转换函数：将 Markdown 文本转成完整的 LaTeX 文档字符串，可直接写入 paper.tex。
+
 
 def copy_style_files(template: ConferenceTemplate, out_dir: Path) -> None:
     """Copy local .sty/.bst helpers into the LaTeX working directory."""
@@ -241,6 +268,8 @@ def copy_style_files(template: ConferenceTemplate, out_dir: Path) -> None:
     for style_file in template.get_style_files():
         if style_file.exists():
             shutil.copy2(style_file, out_dir / style_file.name)
+
+# 将模板相关的本地样式文件复制到输出目录，保证编译时能找到 .sty/.bst 等文件。
 
 
 def run_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -255,6 +284,8 @@ def run_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess[st
         errors="replace",
     )
 
+# 运行一个外部命令并捕获输出，用于 pdflatex / bibtex 等调用的诊断。
+
 
 def parse_latex_errors(log_text: str) -> list[str]:
     """Extract only the most useful LaTeX error lines for debugging."""
@@ -263,6 +294,8 @@ def parse_latex_errors(log_text: str) -> list[str]:
         if line.startswith("! "):
             errors.append(line.strip())
     return errors
+
+# 从 LaTeX 日志中抽取以 "! " 开头的错误信息，作为快速诊断的摘要。
 
 
 def compile_latex(tex_path: Path, max_attempts: int = 2) -> CompileResult:
@@ -314,6 +347,8 @@ def compile_latex(tex_path: Path, max_attempts: int = 2) -> CompileResult:
         errors=errors,
     )
 
+# 调用 pdflatex/bibtex 的编译入口：尝试若干次并收集命令与错误，返回封装结果。
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build a standalone CLI for markdown-to-LaTeX export."""
@@ -325,6 +360,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--author", action="append", default=[], help="Author name; repeatable")
     parser.add_argument("--compile", action="store_true", help="Compile with pdflatex after writing paper.tex")
     return parser
+
+# 小型 CLI 的参数解析器，便于在没有外部框架时独立运行模块。
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -350,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(item)
             return 1
     return 0
+
+# 主程序：写入 paper.tex 并可选调用 LaTeX 工具链编译，遇到错误会打印简化的错误信息并返回非零码。
 
 
 if __name__ == "__main__":
