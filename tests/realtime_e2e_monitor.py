@@ -1,7 +1,7 @@
 """Run one E2E problem with real-time tracking and UTF-8-safe logs.
 
 Usage:
-    .venv\\Scripts\\python.exe scripts/realtime_e2e_monitor.py \
+    .venv\\Scripts\\python.exe tests/realtime_e2e_monitor.py \
       --input data/e2e_inputs/imo-bench-algebra-001.txt \
       --max-turns 3
 """
@@ -17,6 +17,12 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.core.config import load_config
+from src.utils.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
+from src.utils.worklog_builder import WorklogBuilder
 
 
 def _now() -> str:
@@ -86,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-turns", type=int, default=3)
     p.add_argument("--poll-seconds", type=int, default=20)
     p.add_argument("--tail-lines", type=int, default=40)
-    p.add_argument("--out-prefix", default=None, help="Optional output prefix under data/logs")
+    p.add_argument("--out-prefix", default=None, help="Optional output prefix under runs/monitoring")
     return p
 
 
@@ -94,16 +100,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     repo = Path(__file__).resolve().parents[1]
-    logs_dir = repo / "data" / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    runs_root = repo / config.get("agent", {}).get("runs_root", "runs")
+    monitor_dir = runs_root / "monitoring"
+    monitor_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = args.out_prefix or f"realtime_{Path(args.input).stem}_{stamp}"
 
-    stdout_path = logs_dir / f"{base}.console.txt"
-    stderr_path = logs_dir / f"{base}.err.txt"
-    tracking_path = logs_dir / f"{base}.tracking.md"
-    worklog_path = logs_dir / f"{base}.md"
+    stdout_path = monitor_dir / f"{base}.console.txt"
+    stderr_path = monitor_dir / f"{base}.err.txt"
+    tracking_path = monitor_dir / f"{base}.tracking.md"
+    worklog_path: Path | None = None
 
     cmd = [
         str(repo / ".venv" / "Scripts" / "python.exe"),
@@ -112,9 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         args.input,
         "--max-turns",
         str(args.max_turns),
-        "--generate-worklog",
-        "--worklog-path",
-        str(worklog_path),
+        "--no-generate-worklog",
     ]
 
     with tracking_path.open("w", encoding="utf-8", newline="\n") as tr:
@@ -125,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         tr.write(f"- stdout: {stdout_path}\n")
         tr.write(f"- stderr: {stderr_path}\n")
         tr.write(f"- tracking: {tracking_path}\n")
-        tr.write(f"- worklog_target: {worklog_path}\n")
+        tr.write("- worklog_target: (deferred, generated from runs stream)\n")
 
     with stdout_path.open("w", encoding="utf-8", newline="\n") as out, stderr_path.open(
         "w", encoding="utf-8", newline="\n"
@@ -152,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         if run_id is None:
             run_id = _find_run_id(stdout_text)
             if run_id:
-                jsonl_path = logs_dir / f"{run_id}.jsonl"
+                jsonl_path = resolve_run_log_path(problem_id=run_id, runs_root=runs_root)
 
         events = _load_jsonl(jsonl_path) if jsonl_path else []
         warnings, bugs = _collect_signals(stdout_text, stderr_text, events)
@@ -184,10 +190,23 @@ def main(argv: list[str] | None = None) -> int:
     if run_id is None:
         run_id = _find_run_id(stdout_text)
         if run_id:
-            jsonl_path = logs_dir / f"{run_id}.jsonl"
+            jsonl_path = resolve_run_log_path(problem_id=run_id, runs_root=runs_root)
 
     events = _load_jsonl(jsonl_path) if jsonl_path else []
     warnings, bugs = _collect_signals(stdout_text, stderr_text, events)
+
+    if run_id and jsonl_path and jsonl_path.exists():
+        try:
+            worklog_path = resolve_run_artifact_path(
+                problem_id=run_id,
+                artifact_name="worklog.monitor.md",
+                runs_root=runs_root,
+            )
+            worklog_path.parent.mkdir(parents=True, exist_ok=True)
+            builder = WorklogBuilder(llm_config=config)
+            builder.build_problem_worklog(str(jsonl_path), str(worklog_path))
+        except Exception as exc:  # noqa: BLE001
+            warnings = sorted(set(warnings + [f"worklog_build_failed: {exc}"]))
 
     with tracking_path.open("a", encoding="utf-8", newline="\n") as tr:
         tr.write("\n")
@@ -212,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"TRACKING={tracking_path}")
     print(f"STDOUT={stdout_path}")
     print(f"STDERR={stderr_path}")
-    print(f"WORKLOG={worklog_path}")
+    print(f"WORKLOG={worklog_path if worklog_path else '(not generated)'}")
     if jsonl_path and jsonl_path.exists():
         print(f"JSONL={jsonl_path}")
     print(f"EXIT_CODE={exit_code}")
