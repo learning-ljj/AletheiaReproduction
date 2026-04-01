@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 
+from src.tools.artifact_reader import read_artifact_layer
 from src.utils.parser import (
     extract_xml_tags,
     parse_citation_review,
@@ -49,3 +53,36 @@ def test_parser_contract_citation_and_review_parse() -> None:
 def test_parser_contract_bad_citation_block_diagnostic() -> None:
     with pytest.raises(ValueError, match="Malformed citation block"):
         parse_citations("broken cite [cite:]")
+
+
+def test_layer_reader_reads_target_layers(tmp_path: Path) -> None:
+    artifact_file = tmp_path / "runs" / "p-layer" / "artifact" / "lemmas" / "001.md"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text(
+        "---\n"
+        "summary: demo lemma\n"
+        "conclusion: demo\n"
+        "---\n\n"
+        "## Layer2-Proof\n"
+        "This is detailed proof text.\n\n"
+        "## Layer3-Source\n"
+        "title: Demo Paper\n",
+        encoding="utf-8",
+    )
+
+    layer1 = read_artifact_layer(str(artifact_file), 1)
+    layer2 = read_artifact_layer(str(artifact_file), 2)
+    layer3 = read_artifact_layer(str(artifact_file), 3)
+
+    assert "summary: demo lemma" in layer1
+    assert "detailed proof text" in layer2
+    assert "title: Demo Paper" in layer3
+
+
+def test_layer_reader_rejects_path_outside_runs_artifact(tmp_path: Path) -> None:
+    outside_file = tmp_path / "outside.md"
+    outside_file.write_text("demo", encoding="utf-8")
+
+    output = read_artifact_layer(str(outside_file), 1)
+    payload = json.loads(output)
+    assert payload["error"] == "PATH_NOT_ALLOWED"

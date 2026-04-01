@@ -2,6 +2,7 @@
 
 import json
 
+from src.tools.artifact_reader import read_artifact_layer
 from src.tools.code_executor import run_python
 
 # ------------------------------------------------------------------
@@ -63,6 +64,31 @@ _TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_artifact_layer",
+            "description": (
+                "Read one specific layer from an artifact markdown file under runs/{problem_id}/artifact. "
+                "layer=1 reads YAML frontmatter summary, layer=2 reads Layer2 body, "
+                "layer=3 reads Layer3 source metadata."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Artifact markdown file path under runs/{problem_id}/artifact.",
+                    },
+                    "layer": {
+                        "type": "integer",
+                        "description": "Target layer index: 1, 2, or 3.",
+                    },
+                },
+                "required": ["path", "layer"],
+            },
+        },
+    },
 ]
 
 def _format_run_python(code: str) -> str:
@@ -97,10 +123,16 @@ def _format_call_searcher(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _format_read_artifact_layer(path: str, layer: int) -> str:
+    """按层读取 artifact 文档。"""
+    return read_artifact_layer(path=path, layer=layer)
+
+
 # 函数名 → 可调用对象的映射
 _TOOL_MAP: dict = {
     "run_python": _format_run_python,
     "call_searcher": _format_call_searcher,
+    "read_artifact_layer": _format_read_artifact_layer,
 }
 
 
