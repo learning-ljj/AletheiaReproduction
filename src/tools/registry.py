@@ -3,8 +3,6 @@
 import json
 
 from src.tools.code_executor import run_python
-from src.tools.web_search import read_arxiv_latex, search_arxiv
-from src.tools.wiki_search import search_wikipedia
 
 # ------------------------------------------------------------------
 # OpenAI function calling 兼容的 tools schema
@@ -41,75 +39,27 @@ _TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "search_wikipedia",
+            "name": "call_searcher",
             "description": (
-                "Search Wikipedia for a concept, theorem, or definition. "
-                "Use this FIRST for general mathematical concepts, named theorems, or "
-                "well-known results before trying search_arxiv. "
-                "Use precise queries (single theorem name or concept), not keyword soup. "
-                "If the first result is off-topic, reformulate once with a clearer term. "
-                "Returns the cleaned page content."
+                "Bridge call to the SearcherAgent retrieval chain. "
+                "Use this whenever external knowledge retrieval is required. "
+                "Current phase provides a placeholder response only; the full chain "
+                "will be wired in later tasks."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (e.g. theorem name, concept).",
+                        "description": "Primary retrieval query.",
+                    },
+                    "query_bundle": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional expanded retrieval queries.",
                     }
                 },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_arxiv",
-            "description": (
-                "Search for academic papers on arXiv by query. "
-                "Use this ONLY for specific academic paper citations or when "
-                "search_wikipedia does not provide sufficient information. "
-                "For general named theorems or well-known results, prefer search_wikipedia first. "
-                "Use concrete paper-oriented queries (title fragment / author / exact topic) rather than "
-                "broad keyword concatenation. "
-                "Returns a list of papers with arXiv ID, title, authors, published date, "
-                "and abstract snippet. If no results are found, flag the citation as a "
-                "potential hallucination."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (e.g. paper title, theorem name, author).",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_arxiv_latex",
-            "description": (
-                "Download an arXiv paper's LaTeX source and extract its abstract and key "
-                "sections (Main Results / Theorems / Key Findings / Conclusion). "
-                "Use this AFTER search_arxiv confirms a paper exists, to verify theorem "
-                "statements, preconditions, and correct usage in the solution. "
-                "Returns up to 6,000 characters of the extracted key sections; "
-                "if no structured sections are found, returns the first 6,000 characters."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "arxiv_id": {
-                        "type": "string",
-                        "description": "The arXiv ID of the paper (e.g. '2501.12345v1').",
-                    }
-                },
-                "required": ["arxiv_id"],
+                "required": [],
             },
         },
     },
@@ -129,32 +79,28 @@ def _format_run_python(code: str) -> str:
     return "\n".join(parts)
 
 
-def _format_search_wikipedia(query: str) -> str:
-    """执行 Wikipedia 搜索并返回结果字符串。"""
-    return search_wikipedia(query)
-
-
-def _format_search_arxiv(query: str) -> str:
-    """执行 arXiv 搜索并序列化结果为 JSON 字符串。"""
-    return json.dumps(search_arxiv(query), ensure_ascii=False)
-
-
-_ARXIV_LATEX_MAX_CHARS = 6_000  # 限制 LaTeX 关键章节返回量（摘要+主要结果），避免填满 LLM 上下文窗口
-# 说明：read_arxiv_latex 现在调用 _extract_key_sections 提取摘要和关键章节，
-# 6000 字符已足够包含 abstract + 一两个主要定理/结果段落。
-
-
-def _format_read_arxiv_latex(arxiv_id: str) -> str:
-    """下载并返回截断后的 LaTeX 源码（限制 30,000 字符）。"""
-    return read_arxiv_latex(arxiv_id, max_chars=_ARXIV_LATEX_MAX_CHARS)
+def _format_call_searcher(
+    query: str | None = None,
+    query_bundle: list[str] | None = None,
+    **extra_args,
+) -> str:
+    """SearcherAgent 桥接占位实现（A10阶段）。"""
+    payload = {
+        "status": "NOT_IMPLEMENTED",
+        "tool": "call_searcher",
+        "message": "SearcherAgent bridge is not wired yet. It will be implemented in Phase D.",
+        "query": query,
+        "query_bundle": query_bundle or [],
+    }
+    if extra_args:
+        payload["extra_args"] = extra_args
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # 函数名 → 可调用对象的映射
 _TOOL_MAP: dict = {
     "run_python": _format_run_python,
-    "search_wikipedia": _format_search_wikipedia,
-    "search_arxiv": _format_search_arxiv,
-    "read_arxiv_latex": _format_read_arxiv_latex,
+    "call_searcher": _format_call_searcher,
 }
 
 
