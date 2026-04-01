@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, Field
+from src.memory.state import ProblemSnapshot, StageSnapshot, StateValidationError
 
 
 class VerificationDecision(str, Enum):
@@ -52,3 +53,14 @@ class ProofState(BaseModel):
     status: RunStatus | None = None
     failure_reason: str | None = None
     final_output: str | None = None
+
+
+__all__ = [
+    "VerificationDecision",
+    "RunStatus",
+    "VerificationLog",
+    "ProofState",
+    "ProblemSnapshot",
+    "StageSnapshot",
+    "StateValidationError",
+]
