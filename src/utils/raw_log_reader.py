@@ -3,8 +3,15 @@
 import json
 from pathlib import Path
 
+RUNS_DIR = Path("runs")
 
-def load_raw_events(problem_id: str, log_dir: Path = Path("data/logs")) -> list[dict]:
+
+def resolve_run_log_path(problem_id: str, runs_root: Path = RUNS_DIR) -> Path:
+    """返回 runs/{problem_id}/history.jsonl 的标准路径。"""
+    return runs_root / problem_id / "history.jsonl"
+
+
+def load_raw_events(problem_id: str, runs_root: Path = RUNS_DIR) -> list[dict]:
     """读取并返回指定问题的 raw 事件列表。
 
     规则：
@@ -12,7 +19,7 @@ def load_raw_events(problem_id: str, log_dir: Path = Path("data/logs")) -> list[
     2. 自动跳过空行。
     3. 若某行 JSON 损坏，抛出带行号的 ValueError，便于定位修复。
     """
-    filepath = log_dir / f"{problem_id}.jsonl"
+    filepath = resolve_run_log_path(problem_id=problem_id, runs_root=runs_root)
     if not filepath.exists():
         return []
 

@@ -299,8 +299,15 @@ class WorklogBuilder:
             run_path = Path(run_jsonl_path)
             output_path = Path(output_md_path)
 
-            problem_id = run_path.stem
-            events = load_raw_events(problem_id=problem_id, log_dir=run_path.parent)
+            # A14 起仅支持 runs/{problem_id}/history.jsonl。
+            if run_path.name == "history.jsonl" and run_path.parent.name:
+                problem_id = run_path.parent.name
+                runs_root = run_path.parent.parent
+            else:
+                problem_id = run_path.stem
+                runs_root = run_path.parent
+
+            events = load_raw_events(problem_id=problem_id, runs_root=runs_root)
 
             # 元信息：耗时与迭代轮次从事件序列推导。
             timestamps = [self._parse_ts(e.get("timestamp")) for e in events]
