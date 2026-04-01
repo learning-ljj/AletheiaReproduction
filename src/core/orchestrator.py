@@ -1,5 +1,6 @@
 """任务编排器：只负责状态机调度，不关心具体 LLM 实现。"""
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ class Orchestrator:
         self.finalizer = finalizer
         self.runs_root = Path(runs_root)
         self.problem_memory: ProblemMemory | None = None
+        self.warning_messages: list[str] = []
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -65,6 +67,11 @@ class Orchestrator:
             last_decision=decision_value,
         )
         self.problem_memory.save_state(snapshot)
+
+    def _build_warning_summary(self) -> str | None:
+        if not self.warning_messages:
+            return None
+        return "\n".join(f"- {msg}" for msg in self.warning_messages)
 
     def _save_artifact(self, state: ProofState) -> None:
         """保存终态 final_output 到 artifact 目录。"""
@@ -113,7 +120,10 @@ class Orchestrator:
         state.status = RunStatus.FAILED
         state.failure_reason = reason
         state.final_output = self.finalizer.build_final_output(
-            success=False, solution_text=None, failure_reason=reason,
+            success=False,
+            solution_text=None,
+            failure_reason=reason,
+            warning_summary=self._build_warning_summary(),
         )
         self._append_raw(state.problem_id, {
             "agent_node": "FINAL",
@@ -132,7 +142,10 @@ class Orchestrator:
         state.status = RunStatus.SUCCESS
         state.failure_reason = None
         state.final_output = self.finalizer.build_final_output(
-            success=True, solution_text=state.current_proof, failure_reason=None,
+            success=True,
+            solution_text=state.current_proof,
+            failure_reason=None,
+            warning_summary=self._build_warning_summary(),
         )
         state.final_answer = state.current_proof
         self._append_raw(state.problem_id, {
@@ -211,6 +224,7 @@ class Orchestrator:
                 partial=True,
                 assessment_output=final_xml_output,
                 preserve_xml=True,
+                warning_summary=self._build_warning_summary(),
             )
         else:
             state.status = RunStatus.FAILED
@@ -221,6 +235,7 @@ class Orchestrator:
                 failure_reason=state.failure_reason,
                 assessment_output=final_xml_output,
                 preserve_xml=True,
+                warning_summary=self._build_warning_summary(),
             )
 
         self._append_raw(state.problem_id, {
@@ -319,6 +334,26 @@ class Orchestrator:
         ]
         citation_review = parse_citation_review(verification_text).strip()
 
+        citation_fail_count = 0
+        if citation_review and citation_review.upper() != "NONE":
+            try:
+                citation_payload = json.loads(citation_review)
+                citation_fail_count = int(citation_payload.get("fail_count", 0) or 0)
+            except Exception:
+                citation_fail_count = 0
+
+        if citation_fail_count > 0:
+            warning = f"Citation review reported {citation_fail_count} failed item(s) at turn {turn_id}."
+            self.warning_messages.append(warning)
+            self._append_raw(state.problem_id, {
+                "agent_node": "WARNING",
+                "turn_id": turn_id,
+                "timestamp": self._now(),
+                "warning_type": "citation_review",
+                "warning": warning,
+                "fail_count": citation_fail_count,
+            })
+
         if self.problem_memory is not None:
             for lemma in verified_lemmas:
                 self.problem_memory.add_lemma(lemma)
@@ -353,6 +388,7 @@ class Orchestrator:
         """
         self._init_problem_memory(state.problem_id)
         set_current_problem_memory(self.problem_memory)
+        self.warning_messages = []
         self._save_state_snapshot(state)
 
         self._append_raw(state.problem_id, {

@@ -104,6 +104,7 @@ class _FinalizerAdapter:
         partial: bool = False,
         assessment_output: str | None = None,
         preserve_xml: bool = False,
+        warning_summary: str | None = None,
     ) -> str:
         return build_final_output(
             success=success,
@@ -112,6 +113,7 @@ class _FinalizerAdapter:
             partial=partial,
             assessment_output=assessment_output,
             preserve_xml=preserve_xml,
+            warning_summary=warning_summary,
         )
 
 

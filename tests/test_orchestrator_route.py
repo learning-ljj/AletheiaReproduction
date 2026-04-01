@@ -30,9 +30,13 @@ class _SimpleFinalizer:
         partial: bool = False,
         assessment_output: str | None = None,
         preserve_xml: bool = False,
+        warning_summary: str | None = None,
     ) -> str:
         status = "success" if success else ("partial" if partial else "failed")
-        return f"status={status};reason={failure_reason};solution={solution_text};assessment={assessment_output}"
+        return (
+            f"status={status};reason={failure_reason};solution={solution_text};"
+            f"assessment={assessment_output};warning={warning_summary}"
+        )
 
 
 class _SuccessPipeline:
@@ -284,3 +288,47 @@ def test_parse_error_missing_solution_fail_route(tmp_path: Path) -> None:
     parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
     assert parse_events
     assert parse_events[0].get("parse_error_code") == "missing_solution"
+
+
+def test_citation_warning_soft_gate_route(tmp_path: Path) -> None:
+    class _CitationPipeline:
+        def call_generator(self, problem_text: str, lesson: str | None = None):
+            return _Resp(content="<solution>ok</solution>", reasoning_content="gen")
+
+        def call_verifier(self, problem_text: str, proof_text: str):
+            return (
+                "<verdict>CORRECT</verdict>\n"
+                "<verification>ok</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>{\"summary\":\"warn\",\"items\":[],\"fail_count\":2}</citation_review>",
+                VerificationDecision.CORRECT,
+                "",
+                [],
+                "phase1",
+            )
+
+        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+            return _Resp(content=previous_solution, reasoning_content="rev")
+
+        def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
+            return RunStatus.PARTIAL.value, "", current_solution, ""
+
+    runs_root = tmp_path / "runs"
+    orchestrator = Orchestrator(
+        max_turns=1,
+        pipeline=_CitationPipeline(),
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-citation", problem_text="demo")
+
+    out = orchestrator.run(state)
+
+    assert out.status == RunStatus.SUCCESS
+    assert "Citation review reported 2 failed item" in (out.final_output or "")
+
+    events = _read_history_events(runs_root, "p-citation")
+    warning_events = [e for e in events if e.get("agent_node") == "WARNING"]
+    assert warning_events
+    assert warning_events[0].get("warning_type") == "citation_review"

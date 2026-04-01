@@ -11,6 +11,7 @@ def build_final_output(
     partial: bool = False,
     assessment_output: str | None = None,
     preserve_xml: bool = False,
+    warning_summary: str | None = None,
 ) -> str:
     """构造最终输出文本。
 
@@ -22,24 +23,30 @@ def build_final_output(
         assessment_output: FINAL 节点的原始 XML 输出（可选）。
         preserve_xml: 若为 True，优先保留原始 XML 输出，便于后续结构化处理。
     """
+    base_output = ""
+
     if success:
-        return (solution_text or "").strip()
-
-    if assessment_output:
+        base_output = (solution_text or "").strip()
+    elif assessment_output:
         if preserve_xml:
-            return assessment_output.strip()
-        solution_block = extract_xml_tag(assessment_output, "solution").strip()
-        verdict_block = extract_xml_tag(assessment_output, "verdict").strip()
-        status_block = extract_xml_tag(assessment_output, "status").strip().upper()
-        if solution_block:
-            return solution_block
-        if verdict_block:
-            return verdict_block
-        if status_block == "BEYOND_CAPABILITY":
-            return "Admits failure: beyond_capability."
+            base_output = assessment_output.strip()
+        else:
+            solution_block = extract_xml_tag(assessment_output, "solution").strip()
+            verdict_block = extract_xml_tag(assessment_output, "verdict").strip()
+            status_block = extract_xml_tag(assessment_output, "status").strip().upper()
+            if solution_block:
+                base_output = solution_block
+            elif verdict_block:
+                base_output = verdict_block
+            elif status_block == "BEYOND_CAPABILITY":
+                base_output = "Admits failure: beyond_capability."
+    elif partial and solution_text:
+        base_output = (solution_text or "").strip()
+    else:
+        reason = (failure_reason or "unknown_reason").strip() or "unknown_reason"
+        base_output = f"Admits failure: {reason}."
 
-    if partial and solution_text:
-        return (solution_text or "").strip()
-
-    reason = (failure_reason or "unknown_reason").strip() or "unknown_reason"
-    return f"Admits failure: {reason}."
+    warning_text = (warning_summary or "").strip()
+    if warning_text:
+        return (base_output + "\n\n## Citation Warnings\n" + warning_text).strip()
+    return base_output
