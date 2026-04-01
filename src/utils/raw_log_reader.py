@@ -6,12 +6,34 @@ from pathlib import Path
 RUNS_DIR = Path("runs")
 
 
-def resolve_run_log_path(problem_id: str, runs_root: Path = RUNS_DIR) -> Path:
+def _normalize_runs_root(runs_root: Path | str = RUNS_DIR) -> Path:
+    return Path(runs_root)
+
+
+def resolve_run_dir(problem_id: str, runs_root: Path | str = RUNS_DIR) -> Path:
+    """返回 runs/{problem_id} 的标准路径。"""
+    if not isinstance(problem_id, str) or not problem_id.strip():
+        raise ValueError("problem_id must be a non-empty string")
+    return _normalize_runs_root(runs_root) / problem_id.strip()
+
+
+def resolve_run_log_path(problem_id: str, runs_root: Path | str = RUNS_DIR) -> Path:
     """返回 runs/{problem_id}/history.jsonl 的标准路径。"""
-    return runs_root / problem_id / "history.jsonl"
+    return resolve_run_dir(problem_id=problem_id, runs_root=runs_root) / "history.jsonl"
 
 
-def load_raw_events(problem_id: str, runs_root: Path = RUNS_DIR) -> list[dict]:
+def resolve_run_artifact_path(
+    problem_id: str,
+    artifact_name: str,
+    runs_root: Path | str = RUNS_DIR,
+) -> Path:
+    """返回 runs/{problem_id}/artifact/{artifact_name} 的标准路径。"""
+    if not isinstance(artifact_name, str) or not artifact_name.strip():
+        raise ValueError("artifact_name must be a non-empty string")
+    return resolve_run_dir(problem_id=problem_id, runs_root=runs_root) / "artifact" / artifact_name
+
+
+def load_raw_events(problem_id: str, runs_root: Path | str = RUNS_DIR) -> list[dict]:
     """读取并返回指定问题的 raw 事件列表。
 
     规则：

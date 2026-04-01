@@ -15,7 +15,7 @@
 
 输出：
     控制台：逐题结果 + 汇总表格
-    JSON  ：data/logs/imobench_{dataset}_{timestamp}.json
+    JSON  ：runs/benchmarks/imobench_{dataset}_{timestamp}.json
 
 评分指标说明
 -----------
@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()
+from src.utils.raw_log_reader import load_raw_events, resolve_run_artifact_path, resolve_run_log_path
 
 _W = 72
 
@@ -101,6 +102,90 @@ def _serialize_history(history) -> list[dict]:
 def _last_verifier_decision(history: list[dict]) -> str | None:
     verifier = [x for x in history if x.get("agent_node") == "VERIFIER"]
     return verifier[-1].get("decision") if verifier else None
+
+
+def _normalize_lemma_text(value: object) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _collect_run_quality_metrics(run_id: str, runs_root: Path) -> dict:
+    from src.utils.parser import parse_lemmas
+
+    metric = {
+        "lemma_candidate_count": 0,
+        "verified_lemma_count": 0,
+        "lemma_accept_rate": 0.0,
+        "citation_warning_count": 0,
+        "has_citation_warning": False,
+        "run_log_path": str(resolve_run_log_path(problem_id=run_id, runs_root=runs_root)),
+    }
+
+    try:
+        events = load_raw_events(problem_id=run_id, runs_root=runs_root)
+    except Exception as exc:  # noqa: BLE001
+        metric["run_log_error"] = str(exc)
+        return metric
+
+    candidate_lemmas: set[str] = set()
+    verified_lemmas: set[str] = set()
+    citation_warning_count = 0
+
+    for event in events:
+        node = str(event.get("agent_node", "")).upper()
+
+        if node in {"GENERATOR", "REVISER"}:
+            content = str(event.get("content", "") or "")
+            for lemma in parse_lemmas(content):
+                normalized = _normalize_lemma_text(lemma)
+                if normalized:
+                    candidate_lemmas.add(normalized)
+            continue
+
+        if node == "VERIFIER":
+            verified_items = event.get("verified_lemmas") or []
+            if isinstance(verified_items, str):
+                verified_items = [verified_items]
+            if isinstance(verified_items, list):
+                for lemma in verified_items:
+                    normalized = _normalize_lemma_text(lemma)
+                    if normalized and normalized.upper() != "NONE":
+                        verified_lemmas.add(normalized)
+            continue
+
+        if node == "WARNING":
+            warning_type = str(event.get("warning_type", "")).lower()
+            warning_text = str(event.get("warning", "")).lower()
+            if warning_type == "citation_review" or "citation" in warning_text:
+                citation_warning_count += 1
+
+    candidate_count = len(candidate_lemmas)
+    verified_count = len(verified_lemmas)
+    metric.update({
+        "lemma_candidate_count": candidate_count,
+        "verified_lemma_count": verified_count,
+        "lemma_accept_rate": round(verified_count / candidate_count, 4) if candidate_count else 0.0,
+        "citation_warning_count": citation_warning_count,
+        "has_citation_warning": citation_warning_count > 0,
+    })
+    return metric
+
+
+def _aggregate_quality_metrics(results: list[dict]) -> dict:
+    total = len(results)
+    total_lemma_candidates = sum(int(r.get("lemma_candidate_count", 0) or 0) for r in results)
+    total_verified_lemmas = sum(int(r.get("verified_lemma_count", 0) or 0) for r in results)
+    citation_warning_count = sum(int(r.get("citation_warning_count", 0) or 0) for r in results)
+    citation_warning_problems = sum(1 for r in results if r.get("has_citation_warning"))
+
+    return {
+        "total_lemma_candidates": total_lemma_candidates,
+        "total_verified_lemmas": total_verified_lemmas,
+        "lemma_accept_rate": round(total_verified_lemmas / total_lemma_candidates, 4)
+        if total_lemma_candidates else 0.0,
+        "citation_warning_count": citation_warning_count,
+        "citation_warning_problems": citation_warning_problems,
+        "citation_warning_rate": round(citation_warning_problems / total, 4) if total else 0.0,
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -193,7 +278,7 @@ def _human_to_3way(reward: str) -> str:
 # AnswerBench 评测
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
+def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict], dict]:
     """运行 AnswerBench，返回 (per-item results, summary)。"""
     from src.utils.evaluator import check_answer
     from src.utils.parser import extract_xml_tag, normalize_short_answer
@@ -218,6 +303,7 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
             elapsed = time.time() - t0
             history_info = _serialize_history(state.history)
             final_verifier_decision = _last_verifier_decision(history_info)
+            quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
@@ -237,6 +323,7 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
+            entry.update(quality_metrics)
             status = "✅" if correct else "❌"
             print(f"  [{pid}] {status}  iters={state.iteration_count}  "
                   f"time={elapsed:.1f}s  gt={item['answer'][:30]}")
@@ -255,6 +342,7 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "error": str(exc),
                 "history": [],
             }
+            entry.update(_collect_run_quality_metrics(run_id=run_id, runs_root=runs_root))
             print(f"  [{pid}] ⚠️  Error: {exc}")
         results.append(entry)
 
@@ -273,6 +361,7 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
         "verifier_false_negative": verifier_fn,
         "error_count": sum(1 for r in results if "error" in r),
     }
+    summary.update(_aggregate_quality_metrics(results))
     return results, summary
 
 
@@ -280,7 +369,7 @@ def run_answerbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
 # ProofBench 评测
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
+def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict], dict]:
     """运行 ProofBench，返回 (per-item results, summary)。"""
     from src.utils.evaluator import check_proof_completeness
     from src.core.state import VerificationDecision
@@ -301,6 +390,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
             )
             elapsed = time.time() - t0
             history_info = _serialize_history(state.history)
+            quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
@@ -316,6 +406,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
+            entry.update(quality_metrics)
             status = "✅" if state.final_answer is not None else "⚠️"
             print(f"  [{pid}] {status}  decision={final_decision}  "
                   f"iters={state.iteration_count}  time={elapsed:.1f}s")
@@ -336,6 +427,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
                 "error": str(exc),
                 "history": [],
             }
+            entry.update(_collect_run_quality_metrics(run_id=run_id, runs_root=runs_root))
             print(f"  [{pid}] ⚠️  Error: {exc}")
         results.append(entry)
 
@@ -361,6 +453,7 @@ def run_proofbench(agent, data: list[dict]) -> tuple[list[dict], dict]:
         "partial_progress": partial_count,
         "error_count": sum(1 for r in results if "error" in r),
     }
+    summary.update(_aggregate_quality_metrics(results))
     return results, summary
 
 
@@ -583,7 +676,7 @@ def main() -> None:
         help="answerbench/proofbench 每题最大 Agent 轮次（默认 3）",
     )
     parser.add_argument(
-        "--output-dir", type=str, default="data/logs",
+        "--output-dir", type=str, default="runs/benchmarks",
         help="结果 JSON 输出目录",
     )
     parser.add_argument(
@@ -611,6 +704,7 @@ def main() -> None:
     config = load_config()
     prompts = load_prompts()
     config.setdefault("agent", {})["max_turns"] = args.max_turns
+    runs_root = Path(config.get("agent", {}).get("runs_root", "runs"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     start_time = datetime.now()
@@ -644,7 +738,7 @@ def main() -> None:
             else:
                 data = select_answerbench_diverse(full_data, n=count)
             agent = AletheiaAgent(config, prompts)
-            results, summary = run_answerbench(agent, data)
+            results, summary = run_answerbench(agent, data, runs_root=runs_root)
 
         elif dataset == "proofbench":
             # 从 proofbench 加载全字段，按类别+难度多样性选题
@@ -654,7 +748,7 @@ def main() -> None:
             else:
                 data = select_proofbench_diverse(full_data, n=count)
             agent = AletheiaAgent(config, prompts)
-            results, summary = run_proofbench(agent, data)
+            results, summary = run_proofbench(agent, data, runs_root=runs_root)
 
         else:  # gradingbench
             data = load_gradingbench_full()
@@ -707,10 +801,15 @@ def main() -> None:
                 log_key = run_id or pid
                 if not log_key:
                     continue
-                jsonl_path = Path("data/logs") / f"{log_key}.jsonl"
+                jsonl_path = resolve_run_log_path(problem_id=log_key, runs_root=runs_root)
                 if not jsonl_path.exists():
                     continue
-                md_path = Path("data/logs") / f"{log_key}.md"
+                md_path = resolve_run_artifact_path(
+                    problem_id=log_key,
+                    artifact_name="worklog.md",
+                    runs_root=runs_root,
+                )
+                md_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     wb.build_problem_worklog(str(jsonl_path), str(md_path))
                     generated_count += 1
