@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.agents.generator import GeneratorAgent
+from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
 from src.core.config import load_prompts
 from src.core.orchestrator import Orchestrator
@@ -187,3 +188,43 @@ def test_prompt_reviser_contract_tags() -> None:
     assert "<solution>" in text
     assert "</solution>" in text
     assert "[cite:" in text
+
+
+def test_reviser_agent_returns_solution_block() -> None:
+    llm = _FakeLLMForGenerator([
+        "<verdict>PARTIAL</verdict>\n<solution>patched solution</solution>",
+    ])
+    agent = ReviserAgent(
+        llm_client=llm,
+        system_prompt="sys",
+        tools=[],
+        tool_executor=None,
+    )
+
+    resp = agent.run(
+        problem_text="demo",
+        previous_solution="<solution>old</solution>",
+        verification_report="fix Step 2",
+    )
+    assert "<solution>" in resp.content
+
+
+def test_reviser_agent_retries_when_solution_missing() -> None:
+    llm = _FakeLLMForGenerator([
+        "draft only",
+        "<verdict>PARTIAL</verdict>\n<solution>fixed reviser output</solution>",
+    ])
+    agent = ReviserAgent(
+        llm_client=llm,
+        system_prompt="sys",
+        tools=[],
+        tool_executor=None,
+    )
+
+    resp = agent.run(
+        problem_text="demo",
+        previous_solution="<solution>old</solution>",
+        verification_report="fix Step 2",
+    )
+    assert "<solution>" in resp.content
+    assert llm.chat_calls == 2

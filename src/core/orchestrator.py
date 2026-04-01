@@ -299,9 +299,11 @@ class Orchestrator:
             previous_solution=state.current_proof,
             verification_report=verification_report,
         )
+        content = resp.content if hasattr(resp, "content") else str(resp)
+        reasoning_content = getattr(resp, "reasoning_content", "")
         self._record_solution_node(
             state, node="REVISER", turn_id=turn_id,
-            content=resp.content, reasoning_content=resp.reasoning_content,
+            content=content, reasoning_content=reasoning_content,
         )
 
     def _execute_verifier_node(self, state: ProofState, *, turn_id: int):

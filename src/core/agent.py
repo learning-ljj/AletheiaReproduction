@@ -1,10 +1,11 @@
 """AletheiaAgent 门面：负责装配依赖并委托 Orchestrator。"""
 
 from src.agents.generator import GeneratorAgent
+from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
 from src.core.finalizer import build_final_output
 from src.core.orchestrator import Orchestrator
-from src.core.pipeline import call_final, call_reviser
+from src.core.pipeline import call_final
 from src.core.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
@@ -33,6 +34,13 @@ class _PipelineAdapter:
             tools=self.tool_schemas,
             tool_executor=self.tool_executor,
         )
+        self.reviser_agent = ReviserAgent(
+            llm_client=self.llm_client,
+            system_prompt=self.prompts["reviser"]["system"],
+            tools=self.tool_schemas,
+            tool_executor=self.tool_executor,
+            max_tool_rounds=5,
+        )
 
     def call_generator(self, problem_text: str, lesson: str | None = None):
         # C31: 主路径改为 GeneratorAgent 对象执行。
@@ -49,12 +57,10 @@ class _PipelineAdapter:
         )
 
     def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
-        return call_reviser(
-            self.llm_client,
-            self.prompts,
-            problem_text,
-            previous_solution,
-            verification_report,
+        return self.reviser_agent.run(
+            problem_text=problem_text,
+            previous_solution=previous_solution,
+            verification_report=verification_report,
         )
 
     def call_final(
