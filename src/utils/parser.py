@@ -19,6 +19,54 @@ def extract_xml_tag(text: str, tag: str) -> str:
     return text[start:end].strip()
 
 
+def extract_xml_tags(text: str, tag: str) -> list[str]:
+    """从文本中提取多个 <tag>...</tag> 块。"""
+    if not text or not tag:
+        return []
+    pattern = re.compile(rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", re.DOTALL)
+    return [(m.group(1) or "").strip() for m in pattern.finditer(text)]
+
+
+def parse_lemmas(text: str) -> list[str]:
+    """提取所有 <lemma> 块内容。"""
+    return extract_xml_tags(text, "lemma")
+
+
+def parse_verified_lemmas(text: str) -> list[str]:
+    """提取所有 <verified_lemmas> 块内容。"""
+    return extract_xml_tags(text, "verified_lemmas")
+
+
+def parse_citations(text: str) -> list[str]:
+    """提取 [cite:path] 引用路径。"""
+    if not text:
+        return []
+
+    citations: list[str] = []
+    pattern = re.compile(r"\[cite:([^\]]*)\]")
+    for match in pattern.finditer(text):
+        raw_path = (match.group(1) or "").strip()
+        if not raw_path:
+            raise ValueError("Malformed citation block: empty [cite:path] payload")
+        citations.append(raw_path)
+    return citations
+
+
+def parse_citation_review(text: str) -> str:
+    """提取 <citation_review> 块内容。"""
+    return extract_xml_tag(text, "citation_review")
+
+
+def parse_protocol_blocks(text: str) -> dict[str, object]:
+    """一次性解析 B20 协议字段。"""
+    return {
+        "lemmas": parse_lemmas(text),
+        "verified_lemmas": parse_verified_lemmas(text),
+        "citations": parse_citations(text),
+        "citation_review": parse_citation_review(text),
+    }
+
+
 def extract_preliminary_solution(text: str) -> str:
     """严格提取 `<solution>...</solution>` 内的完整解答正文。"""
     solution = extract_xml_tag(text, "solution")
