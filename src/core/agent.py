@@ -104,6 +104,7 @@ class AletheiaAgent:
         self.llm_client = create_llm_client(config, stream_file=stream_file)
         self.prompts = prompts
         self.max_turns: int = config.get("agent", {}).get("max_turns", 5)
+        self.runs_root: str = config.get("agent", {}).get("runs_root", "runs")
         self.tool_schemas = get_tool_schemas()
         self.tool_executor = execute_tool
 
@@ -119,6 +120,7 @@ class AletheiaAgent:
             pipeline=pipeline_adapter,
             logger=_LoggerAdapter(),
             finalizer=_FinalizerAdapter(),
+            runs_root=self.runs_root,
         )
 
     def solve(self, problem_id: str, problem_text: str, ground_truth: str | None = None) -> ProofState:

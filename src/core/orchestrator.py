@@ -2,8 +2,10 @@
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
-from src.core.state import ProofState, RunStatus, VerificationLog, VerificationDecision
+from src.core.state import ProofState, ProblemSnapshot, RunStatus, VerificationLog, VerificationDecision
+from src.memory.problem_memory import ProblemMemory
 from src.utils.parser import extract_xml_tag
 
 _logger = logging.getLogger(__name__)
@@ -18,17 +20,46 @@ class Orchestrator:
         pipeline: object,
         logger: object,
         finalizer: object,
+        runs_root: Path | str = "runs",
     ):
         self.max_turns = max_turns
         self.pipeline = pipeline
         self.logger = logger
         self.finalizer = finalizer
+        self.runs_root = Path(runs_root)
+        self.problem_memory: ProblemMemory | None = None
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
     def _append_raw(self, problem_id: str, payload: dict) -> None:
+        if self.problem_memory is not None:
+            self.problem_memory.append_event(payload)
+            return
         self.logger.append_raw_event(problem_id=problem_id, payload=payload)
+
+    def _init_problem_memory(self, problem_id: str) -> None:
+        self.problem_memory = ProblemMemory(problem_id=problem_id, runs_root=self.runs_root)
+        self.problem_memory.init_dirs()
+
+    def _save_state_snapshot(
+        self,
+        state: ProofState,
+        *,
+        last_decision: VerificationDecision | str | None = None,
+    ) -> None:
+        if self.problem_memory is None:
+            return
+        decision_value = None
+        if last_decision is not None:
+            decision_value = last_decision.value if hasattr(last_decision, "value") else str(last_decision)
+        snapshot = ProblemSnapshot(
+            problem_id=state.problem_id,
+            iteration_count=state.iteration_count,
+            status=state.status.value if state.status is not None else "RUNNING",
+            last_decision=decision_value,
+        )
+        self.problem_memory.save_state(snapshot)
 
     def _save_artifact(self, state: ProofState) -> None:
         """保存终态 final_output 到 artifact 目录。"""
@@ -87,6 +118,7 @@ class Orchestrator:
             "failure_reason": state.failure_reason,
             "final_output": state.final_output,
         })
+        self._save_state_snapshot(state)
         self._save_artifact(state)
         return state
 
@@ -106,6 +138,7 @@ class Orchestrator:
             "failure_reason": None,
             "final_output": state.final_output,
         })
+        self._save_state_snapshot(state, last_decision=VerificationDecision.CORRECT)
         self._save_artifact(state)
         return state
 
@@ -197,6 +230,7 @@ class Orchestrator:
             "xml_output": final_xml_output,
             "final_output": state.final_output,
         })
+        self._save_state_snapshot(state, last_decision=last_decision)
         self._save_artifact(state)
         return state
 
@@ -293,6 +327,9 @@ class Orchestrator:
         轮次以 Verifier 运行次数计算，最多运行 max_turns 次。
         轮次耗尽时根据最后裁决和解答内容区分结局（见 _finalize_exhausted）。
         """
+        self._init_problem_memory(state.problem_id)
+        self._save_state_snapshot(state)
+
         self._append_raw(state.problem_id, {
             "agent_node": "RUN_START",
             "turn_id": -1,
@@ -319,6 +356,8 @@ class Orchestrator:
                 return self._finalize_failure(state, "parse_error")
             except Exception as exc:  # noqa: BLE001
                 return self._finalize_failure(state, self._classify_runtime_error(exc))
+
+            self._save_state_snapshot(state, last_decision=decision)
 
             next_node = self._route_on_decision(decision, state)
 
