@@ -1,7 +1,10 @@
 """工具注册表：OpenAI Function Calling schema 与统一执行分发。"""
 
 import json
+from typing import Callable
 
+from src.agents.searcher import SearcherAgent
+from src.memory.problem_memory import get_current_problem_memory
 from src.tools.artifact_reader import read_artifact_layer
 from src.tools.code_executor import run_python
 
@@ -91,6 +94,9 @@ _TOOL_SCHEMAS: list[dict] = [
     },
 ]
 
+
+_SEARCH_SOURCE_HANDLERS: dict[str, Callable[[str, int], list[dict]]] = {}
+
 def _format_run_python(code: str) -> str:
     """执行代码并格式化返回结果为字符串。"""
     result = run_python(code)
@@ -110,13 +116,31 @@ def _format_call_searcher(
     query_bundle: list[str] | None = None,
     **extra_args,
 ) -> str:
-    """SearcherAgent 桥接占位实现（A10阶段）。"""
+    """调用 SearcherAgent 并返回检索摘要与落盘路径。"""
+    problem_memory = get_current_problem_memory()
+    if problem_memory is None:
+        return json.dumps(
+            {
+                "status": "ERROR",
+                "tool": "call_searcher",
+                "error": "NO_PROBLEM_MEMORY",
+                "message": "ProblemMemory context is missing for call_searcher.",
+            },
+            ensure_ascii=False,
+        )
+
+    agent = SearcherAgent(
+        problem_memory=problem_memory,
+        source_handlers=_SEARCH_SOURCE_HANDLERS,
+    )
+    result = agent.run(query=query, query_bundle=query_bundle)
     payload = {
-        "status": "NOT_IMPLEMENTED",
+        "status": "OK",
         "tool": "call_searcher",
-        "message": "SearcherAgent bridge is not wired yet. It will be implemented in Phase D.",
         "query": query,
         "query_bundle": query_bundle or [],
+        "paper_count": result.get("count", 0),
+        "papers": [item.get("path") for item in result.get("papers", [])],
     }
     if extra_args:
         payload["extra_args"] = extra_args
@@ -134,6 +158,12 @@ _TOOL_MAP: dict = {
     "call_searcher": _format_call_searcher,
     "read_artifact_layer": _format_read_artifact_layer,
 }
+
+
+def configure_searcher_sources(source_handlers: dict[str, Callable[[str, int], list[dict]]]) -> None:
+    """Configure source handlers used by call_searcher bridge (useful for tests)."""
+    global _SEARCH_SOURCE_HANDLERS
+    _SEARCH_SOURCE_HANDLERS = dict(source_handlers or {})
 
 
 # ------------------------------------------------------------------

@@ -35,6 +35,11 @@ class GeneratorAgent(BaseAgent):
         error_lessons: str | None = None,
     ) -> str:
         parts = [problem_text.strip()]
+        parts.append(
+            "\n\nTooling Hint:\n"
+            "- If external references are needed, call tool `call_searcher` with a focused query.\n"
+            "- After retrieval, cite artifact paths as [cite:path]."
+        )
         if layer1_summaries:
             parts.append("\n\n---\nLayer1 Summaries:\n" + "\n".join(f"- {item}" for item in layer1_summaries))
         if error_lessons:

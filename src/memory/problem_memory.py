@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from src.memory.state import ProblemSnapshot
+
+
+_CURRENT_PROBLEM_MEMORY: ContextVar["ProblemMemory | None"] = ContextVar(
+    "current_problem_memory",
+    default=None,
+)
+
+
+def set_current_problem_memory(memory: "ProblemMemory | None") -> None:
+    _CURRENT_PROBLEM_MEMORY.set(memory)
+
+
+def get_current_problem_memory() -> "ProblemMemory | None":
+    return _CURRENT_PROBLEM_MEMORY.get()
 
 
 class ProblemMemory:

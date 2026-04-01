@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.core.state import ProofState, ProblemSnapshot, RunStatus, VerificationLog, VerificationDecision
-from src.memory.problem_memory import ProblemMemory
+from src.memory.problem_memory import ProblemMemory, set_current_problem_memory
 from src.utils.parser import (
     classify_parse_error,
     extract_xml_tag,
@@ -352,6 +352,7 @@ class Orchestrator:
         轮次耗尽时根据最后裁决和解答内容区分结局（见 _finalize_exhausted）。
         """
         self._init_problem_memory(state.problem_id)
+        set_current_problem_memory(self.problem_memory)
         self._save_state_snapshot(state)
 
         self._append_raw(state.problem_id, {
