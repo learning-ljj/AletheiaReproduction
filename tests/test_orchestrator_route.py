@@ -113,6 +113,60 @@ class _FailPipeline:
         raise AssertionError("final pipeline should not run on initial failure")
 
 
+class _ParseRecoverPipeline:
+    def __init__(self):
+        self.generator_calls = 0
+        self.verifier_calls = 0
+
+    def call_generator(self, problem_text: str, lesson: str | None = None):
+        self.generator_calls += 1
+        return _Resp(content=f"<solution>candidate-{self.generator_calls}</solution>", reasoning_content="gen")
+
+    def call_verifier(self, problem_text: str, proof_text: str):
+        self.verifier_calls += 1
+        if self.verifier_calls == 1:
+            raise ValueError("Invalid <verdict> value: 'MAYBE'")
+        return (
+            "<verdict>CORRECT</verdict>",
+            VerificationDecision.CORRECT,
+            "",
+            [],
+            "phase1",
+        )
+
+    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        return _Resp(content=previous_solution, reasoning_content="rev")
+
+    def call_final(
+        self,
+        problem_text: str,
+        current_solution: str,
+        last_verifier_decision: str,
+        last_verification_report: str,
+    ):
+        return RunStatus.PARTIAL.value, "", current_solution, ""
+
+
+class _ParseFailPipeline:
+    def call_generator(self, problem_text: str, lesson: str | None = None):
+        return _Resp(content="<solution>candidate</solution>", reasoning_content="gen")
+
+    def call_verifier(self, problem_text: str, proof_text: str):
+        raise ValueError("Missing <solution> tag")
+
+    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        return _Resp(content=previous_solution, reasoning_content="rev")
+
+    def call_final(
+        self,
+        problem_text: str,
+        current_solution: str,
+        last_verifier_decision: str,
+        last_verification_report: str,
+    ):
+        return RunStatus.PARTIAL.value, "", current_solution, ""
+
+
 def _read_state(runs_root: Path, problem_id: str) -> dict:
     state_path = runs_root / problem_id / "state.json"
     assert state_path.exists()
@@ -123,6 +177,10 @@ def _read_history_lines(runs_root: Path, problem_id: str) -> list[str]:
     history_path = runs_root / problem_id / "history.jsonl"
     assert history_path.exists()
     return [line for line in history_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _read_history_events(runs_root: Path, problem_id: str) -> list[dict]:
+    return [json.loads(line) for line in _read_history_lines(runs_root, problem_id)]
 
 
 def test_persist_success_state_and_history(tmp_path: Path) -> None:
@@ -183,3 +241,46 @@ def test_persist_failure_state_and_history(tmp_path: Path) -> None:
     assert persisted["status"] == RunStatus.FAILED.value
     history = _read_history_lines(runs_root, "p-fail")
     assert len(history) >= 2
+
+
+def test_parse_error_invalid_verdict_recover_route(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    pipeline = _ParseRecoverPipeline()
+    orchestrator = Orchestrator(
+        max_turns=2,
+        pipeline=pipeline,
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-parse-recover", problem_text="demo")
+
+    out = orchestrator.run(state)
+
+    assert out.status == RunStatus.SUCCESS
+    assert pipeline.generator_calls >= 2
+    events = _read_history_events(runs_root, "p-parse-recover")
+    parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
+    assert parse_events
+    assert parse_events[0].get("parse_error_code") == "invalid_verdict"
+
+
+def test_parse_error_missing_solution_fail_route(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    orchestrator = Orchestrator(
+        max_turns=1,
+        pipeline=_ParseFailPipeline(),
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-parse-fail", problem_text="demo")
+
+    out = orchestrator.run(state)
+
+    assert out.status == RunStatus.FAILED
+    assert out.failure_reason == "missing_solution"
+    events = _read_history_events(runs_root, "p-parse-fail")
+    parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
+    assert parse_events
+    assert parse_events[0].get("parse_error_code") == "missing_solution"

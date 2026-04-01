@@ -5,6 +5,38 @@ import re
 from src.core.state import VerificationDecision
 
 
+class ParseContractError(ValueError):
+    """Structured parser error for routing decisions."""
+
+    def __init__(self, parse_error_code: str, message: str, failure_reason: str | None = None):
+        super().__init__(message)
+        self.parse_error_code = parse_error_code
+        self.failure_reason = failure_reason or parse_error_code
+
+
+def classify_parse_error(raw_text: str | None, exc: Exception) -> tuple[str, str]:
+    """Classify parse exceptions into stable route-friendly error codes."""
+    if isinstance(exc, ParseContractError):
+        return exc.parse_error_code, exc.failure_reason
+
+    msg = (str(exc) or "").lower()
+    text = (raw_text or "").lower()
+
+    if "missing <solution>" in msg or ("<solution>" in text and "</solution>" not in text):
+        return "missing_solution", "missing_solution"
+
+    if "invalid <verdict>" in msg or "missing <verdict>" in msg:
+        return "invalid_verdict", "invalid_verdict"
+
+    if "missing <verification>" in msg:
+        return "malformed_tag", "malformed_tag"
+
+    if "missing required" in msg or "missing <status>" in msg:
+        return "malformed_tag", "malformed_tag"
+
+    return "malformed_tag", "malformed_tag"
+
+
 def extract_xml_tag(text: str, tag: str) -> str:
     """从文本中提取 <tag>...</tag> 内的内容；找不到返回空字符串。"""
     open_tag = f"<{tag}>"
@@ -72,7 +104,7 @@ def extract_preliminary_solution(text: str) -> str:
     solution = extract_xml_tag(text, "solution")
     if solution:
         return solution
-    raise ValueError("Missing <solution> tag")
+    raise ParseContractError("missing_solution", "Missing <solution> tag")
 
 
 def extract_generator_candidate_from_reasoning(reasoning_text: str) -> str:
@@ -137,7 +169,10 @@ def extract_verification_report(verification_text: str) -> str:
     result = extract_xml_tag(verification_text, "verification")
     if result:
         return result
-    raise ValueError("Missing <verification> tag in Verifier output")
+    raise ParseContractError(
+        "malformed_tag",
+        "Missing <verification> tag in Verifier output",
+    )
 
 
 def parse_verification_decision(verification_text: str) -> VerificationDecision:
@@ -151,9 +186,15 @@ def parse_verification_decision(verification_text: str) -> VerificationDecision:
             return VerificationDecision.MINOR_FLAW
         if verdict_upper == VerificationDecision.CORRECT.value:
             return VerificationDecision.CORRECT
-        raise ValueError(f"Invalid <verdict> value: {verdict_text!r}")
+        raise ParseContractError(
+            "invalid_verdict",
+            f"Invalid <verdict> value: {verdict_text!r}",
+        )
 
-    raise ValueError("Missing <verdict> tag in Verifier output")
+    raise ParseContractError(
+        "invalid_verdict",
+        "Missing <verdict> tag in Verifier output",
+    )
 
 
 def parse_final_xml_output(final_text: str) -> tuple[str, str, str]:
@@ -163,11 +204,11 @@ def parse_final_xml_output(final_text: str) -> tuple[str, str, str]:
     solution = extract_xml_tag(final_text, "solution").strip()
 
     if status not in ("PARTIAL_PROGRESS", "BEYOND_CAPABILITY"):
-        raise ValueError(f"Invalid <status> value: {status!r}")
+        raise ParseContractError("malformed_tag", f"Invalid <status> value: {status!r}")
     if not verdict:
-        raise ValueError("Missing <verdict> content in FINAL output")
+        raise ParseContractError("invalid_verdict", "Missing <verdict> content in FINAL output")
     if not solution:
-        raise ValueError("Missing <solution> content in FINAL output")
+        raise ParseContractError("missing_solution", "Missing <solution> content in FINAL output")
     return status, verdict, solution
 
 

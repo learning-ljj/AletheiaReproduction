@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.core.state import ProofState, ProblemSnapshot, RunStatus, VerificationLog, VerificationDecision
 from src.memory.problem_memory import ProblemMemory
-from src.utils.parser import extract_xml_tag
+from src.utils.parser import classify_parse_error, extract_xml_tag
 
 _logger = logging.getLogger(__name__)
 
@@ -352,8 +352,34 @@ class Orchestrator:
                 decision, verification_report = self._execute_verifier_node(state, turn_id=turn)
             except TimeoutError:
                 return self._finalize_failure(state, "timeout")
-            except ValueError:
-                return self._finalize_failure(state, "parse_error")
+            except ValueError as exc:
+                parse_error_code, failure_reason = classify_parse_error(state.current_proof, exc)
+                self._append_raw(state.problem_id, {
+                    "agent_node": "PARSE_ERROR",
+                    "turn_id": turn,
+                    "timestamp": self._now(),
+                    "parse_error_code": parse_error_code,
+                    "failure_reason": failure_reason,
+                    "error_message": str(exc),
+                })
+                self._save_state_snapshot(state, last_decision=parse_error_code)
+
+                # B22: 解析失败优先回退到 GENERATOR 做一次格式修复重试。
+                if turn < self.max_turns:
+                    try:
+                        self._execute_generator_node(
+                            state,
+                            turn_id=turn,
+                            lesson=(
+                                "Previous verifier parsing failed with code "
+                                f"{parse_error_code}. Return strict XML contract tags and valid values only."
+                            ),
+                        )
+                        continue
+                    except Exception as inner_exc:  # noqa: BLE001
+                        return self._finalize_failure(state, self._classify_runtime_error(inner_exc))
+
+                return self._finalize_failure(state, failure_reason)
             except Exception as exc:  # noqa: BLE001
                 return self._finalize_failure(state, self._classify_runtime_error(exc))
 
