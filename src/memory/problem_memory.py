@@ -165,3 +165,7 @@ class ProblemMemory:
                 return self.citations_bib_path
         self._atomic_write_text(self.citations_bib_path, normalized)
         return self.citations_bib_path
+
+    def save_bib_entries(self, entries: list[str]) -> Path:
+        """Persist BibTeX entries list to artifact/citations.bib."""
+        return self.save_bibtex("\n\n".join((entry or "").strip() for entry in entries if entry))

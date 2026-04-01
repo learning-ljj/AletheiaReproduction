@@ -2,7 +2,7 @@ from pathlib import Path
 
 from src.core.finalizer import build_final_output
 from src.memory.problem_memory import ProblemMemory
-from src.utils.reference_builder import build_references
+from src.utils.reference_builder import build_references, export_references_bibtex, references_to_bibtex
 
 
 
@@ -52,3 +52,18 @@ def test_final_output_template_includes_references_and_warnings() -> None:
     assert "[1] Alice; Bob. Demo Paper." in final_output
     assert "## Citation Warnings" in final_output
     assert "missing citation path" in final_output
+
+
+def test_bibtex_export_from_references(tmp_path: Path) -> None:
+    memory = ProblemMemory(problem_id="p-bib", runs_root=tmp_path / "runs")
+    references = ["[1] Alice; Bob. Demo Paper. https://example.org/demo."]
+
+    bib_text = references_to_bibtex(references)
+    assert "@misc{" in bib_text
+    assert "title = {Demo Paper}" in bib_text
+
+    bib_path = export_references_bibtex(references, memory)
+    assert bib_path.exists()
+    text = bib_path.read_text(encoding="utf-8")
+    assert "@misc{" in text
+    assert "howpublished" in text

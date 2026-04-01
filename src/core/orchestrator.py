@@ -13,7 +13,7 @@ from src.utils.parser import (
     parse_citation_review,
     parse_verified_lemmas,
 )
-from src.utils.reference_builder import build_references
+from src.utils.reference_builder import build_references, export_references_bibtex
 
 _logger = logging.getLogger(__name__)
 
@@ -82,6 +82,11 @@ class Orchestrator:
             return solution_text, [], []
         try:
             converted, references, missing = build_references(solution_text or "", self.problem_memory)
+            if references:
+                try:
+                    export_references_bibtex(references, self.problem_memory)
+                except Exception as exc:  # noqa: BLE001
+                    missing.append(f"bibtex_export_error: {type(exc).__name__}: {exc}")
             return converted, references, missing
         except Exception as exc:  # noqa: BLE001
             return solution_text, [], [f"reference_builder_error: {type(exc).__name__}: {exc}"]
