@@ -14,6 +14,7 @@ from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
 from src.core.state import RunStatus
 from src.utils.data_loader import lookup_ground_truth
+from src.utils.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
 from src.utils.worklog_builder import WorklogBuilder
 
 
@@ -61,18 +62,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--worklog-path",
         type=str,
         default=None,
-        help="Optional output path for markdown worklog (default: data/logs/{problem_id}.md).",
+        help="Optional output path for markdown worklog (default: runs/{problem_id}/artifact/worklog.md).",
     )
     return parser
 
 
-def _maybe_build_worklog(problem_id: str, worklog_path: str | None = None, llm_config: dict | None = None) -> str | None:
+def _maybe_build_worklog(
+    problem_id: str,
+    runs_root: Path,
+    worklog_path: str | None = None,
+    llm_config: dict | None = None,
+) -> str | None:
     """若 raw 日志存在则生成 markdown 工作日志，返回输出路径。"""
-    run_jsonl_path = Path("data/logs") / f"{problem_id}.jsonl"
+    run_jsonl_path = resolve_run_log_path(problem_id=problem_id, runs_root=runs_root)
     if not run_jsonl_path.exists():
         return None
 
-    output_md = Path(worklog_path) if worklog_path else (Path("data/logs") / f"{problem_id}.md")
+    output_md = Path(worklog_path) if worklog_path else resolve_run_artifact_path(
+        problem_id=problem_id,
+        artifact_name="worklog.md",
+        runs_root=runs_root,
+    )
+    output_md.parent.mkdir(parents=True, exist_ok=True)
     wb = WorklogBuilder(llm_config=llm_config)
     wb.build_problem_worklog(str(run_jsonl_path), str(output_md))
     return str(output_md)
@@ -106,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── 覆盖 max_turns ──
     if args.max_turns is not None:
         config.setdefault("agent", {})["max_turns"] = args.max_turns
+    runs_root = Path(config.get("agent", {}).get("runs_root", "runs"))
 
     # ── 初始化并运行 Agent ──
     # 生成带时间戳的唯一运行 ID，避免多次运行的 JSONL 日志相互覆盖。
@@ -150,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             generated = _maybe_build_worklog(
                 problem_id=run_id,
+                runs_root=runs_root,
                 worklog_path=args.worklog_path,
                 llm_config=config,
             )
@@ -159,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             logging.getLogger(__name__).error("Worklog generation failed", exc_info=True)
             print(f">>> Worklog generation failed: {exc}", file=sys.stderr)
 
-    print(f">>> JSONL logs saved to: data/logs/{run_id}.jsonl")
+    print(f">>> JSONL logs saved to: {resolve_run_log_path(problem_id=run_id, runs_root=runs_root)}")
     return 0 if solve_error is None else 1
 
 
