@@ -4,10 +4,11 @@ from pathlib import Path
 import pytest
 
 from src.tools.artifact_reader import read_artifact_layer
-from src.utils.parser import (
+from src.utils.parsing.parser import (
     extract_xml_tags,
     parse_citation_review,
     parse_citations,
+    parse_citations_with_claim_spans,
     parse_lemmas,
     parse_protocol_blocks,
     parse_verified_lemmas,
@@ -55,6 +56,14 @@ def test_parser_contract_bad_citation_block_diagnostic() -> None:
         parse_citations("broken cite [cite:]")
 
 
+def test_parser_contract_extracts_sentence_level_claim_spans() -> None:
+    text = "<solution>Claim alpha [cite:artifact/papers/a.md]\nNext line.</solution>"
+    cites, spans = parse_citations_with_claim_spans(text)
+
+    assert cites == ["artifact/papers/a.md"]
+    assert spans == ["Claim alpha"]
+
+
 def test_layer_reader_reads_target_layers(tmp_path: Path) -> None:
     artifact_file = tmp_path / "runs" / "p-layer" / "artifact" / "lemmas" / "001.md"
     artifact_file.parent.mkdir(parents=True, exist_ok=True)
@@ -74,9 +83,17 @@ def test_layer_reader_reads_target_layers(tmp_path: Path) -> None:
     layer2 = read_artifact_layer(str(artifact_file), 2)
     layer3 = read_artifact_layer(str(artifact_file), 3)
 
-    assert "summary: demo lemma" in layer1
-    assert "detailed proof text" in layer2
-    assert "title: Demo Paper" in layer3
+    layer1_payload = json.loads(layer1)
+    layer2_payload = json.loads(layer2)
+    layer3_payload = json.loads(layer3)
+
+    assert layer1_payload["status"] == "OK"
+    assert layer2_payload["status"] == "OK"
+    assert layer3_payload["status"] == "OK"
+
+    assert "summary: demo lemma" in layer1_payload["data"]["content"]
+    assert "detailed proof text" in layer2_payload["data"]["content"]
+    assert "title: Demo Paper" in layer3_payload["data"]["content"]
 
 
 def test_layer_reader_rejects_path_outside_runs_artifact(tmp_path: Path) -> None:
@@ -85,7 +102,8 @@ def test_layer_reader_rejects_path_outside_runs_artifact(tmp_path: Path) -> None
 
     output = read_artifact_layer(str(outside_file), 1)
     payload = json.loads(output)
-    assert payload["error"] == "PATH_NOT_ALLOWED"
+    assert payload["status"] == "ERROR"
+    assert payload["error"]["error_code"] == "PATH_NOT_ALLOWED"
 
 
 def test_parser_contract_empty_input_defaults() -> None:

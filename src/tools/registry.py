@@ -1,104 +1,40 @@
 """工具注册表：OpenAI Function Calling schema 与统一执行分发。"""
 
-import json
+import time
 from typing import Callable
 
+from src.agents.citation_reviewer import CitationReviewerAgent
 from src.agents.searcher import SearcherAgent
 from src.memory.problem_memory import get_current_problem_memory
 from src.tools.artifact_reader import read_artifact_layer
 from src.tools.code_executor import run_python
-
-# ------------------------------------------------------------------
-# OpenAI function calling 兼容的 tools schema
-# ------------------------------------------------------------------
-
-_TOOL_SCHEMAS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "run_python",
-            "description": (
-                "Execute Python code and return stdout/stderr. Use this to verify arithmetic, algebraic, or numerical steps. "
-                "Before writing code, verify API availability in standard library modules; do NOT call non-existent functions (e.g., `math.phi`). "
-                "If Euler's totient is needed, implement a local `phi(n)` helper in the snippet. "
-                "Requirements for checks involving fractions or rational expressions:\n"
-                "- For formulas containing fractions or rational expressions, do NOT perform comparisons by converting the theoretical expression into integer division using `//`.\n"
-                "- Prefer exact arithmetic using `fractions.Fraction` or compare by cross-multiplication to ensure precise equality checks.\n"
-                "- If rounding or floor operations are intentionally used (e.g., `//` or `math.floor`), explicitly state in the output that this is part of the problem definition and not an implementation approximation.\n"
-                "Code snippets must be self-contained and not rely on prior execution state; always print labeled final checked values for reproducibility. "
-                "For script-like checks, include a short PASS/FAIL summary line. Avoid OOM or exponential-time brute-force."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Python code to execute.",
-                    }
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "call_searcher",
-            "description": (
-                "Bridge call to the SearcherAgent retrieval chain. "
-                "Use this whenever external knowledge retrieval is required. "
-                "Current phase provides a placeholder response only; the full chain "
-                "will be wired in later tasks."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Primary retrieval query.",
-                    },
-                    "query_bundle": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional expanded retrieval queries.",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_artifact_layer",
-            "description": (
-                "Read one specific layer from an artifact markdown file under runs/{problem_id}/artifact. "
-                "layer=1 reads YAML frontmatter summary, layer=2 reads Layer2 body, "
-                "layer=3 reads Layer3 source metadata."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Artifact markdown file path under runs/{problem_id}/artifact.",
-                    },
-                    "layer": {
-                        "type": "integer",
-                        "description": "Target layer index: 1, 2, or 3.",
-                    },
-                },
-                "required": ["path", "layer"],
-            },
-        },
-    },
-]
+from src.tools.envelope import (
+    extract_tool_error,
+    format_tool_error,
+    format_tool_success,
+    parse_tool_payload,
+)
+from src.tools.schemas import get_tool_schemas as _schema_get_tool_schemas
 
 
 _SEARCH_SOURCE_HANDLERS: dict[str, Callable[[str, int], list[dict]]] = {}
+_TOOL_RETRY_MAX_ATTEMPTS: int = 1
+_TOOL_RETRY_BACKOFF_SECONDS: float = 0.0
+
+
+def configure_tool_resilience(*, max_attempts: int = 1, backoff_seconds: float = 0.0) -> None:
+    """Configure retry policy for execute_tool middleware."""
+    global _TOOL_RETRY_MAX_ATTEMPTS, _TOOL_RETRY_BACKOFF_SECONDS
+    _TOOL_RETRY_MAX_ATTEMPTS = max(1, int(max_attempts))
+    _TOOL_RETRY_BACKOFF_SECONDS = max(0.0, float(backoff_seconds))
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
+
 
 def _format_run_python(code: str) -> str:
-    """执行代码并格式化返回结果为字符串。"""
+    """执行代码并返回统一成功包络。"""
     result = run_python(code)
     parts = []
     if result["stdout"]:
@@ -108,7 +44,16 @@ def _format_run_python(code: str) -> str:
     if not parts:
         parts.append("(no output)")
     parts.append(f"exit_code: {result['exit_code']}")
-    return "\n".join(parts)
+    rendered = "\n".join(parts)
+    return format_tool_success(
+        tool="run_python",
+        data={
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "exit_code": result.get("exit_code", 1),
+            "rendered": rendered,
+        },
+    )
 
 
 def _format_call_searcher(
@@ -119,37 +64,85 @@ def _format_call_searcher(
     """调用 SearcherAgent 并返回检索摘要与落盘路径。"""
     problem_memory = get_current_problem_memory()
     if problem_memory is None:
-        return json.dumps(
-            {
-                "status": "ERROR",
-                "tool": "call_searcher",
-                "error": "NO_PROBLEM_MEMORY",
-                "message": "ProblemMemory context is missing for call_searcher.",
-            },
-            ensure_ascii=False,
+        return format_tool_error(
+            tool="call_searcher",
+            error_code="NO_PROBLEM_MEMORY",
+            message="ProblemMemory context is missing for call_searcher.",
+            retryable=False,
+        )
+    if not _SEARCH_SOURCE_HANDLERS:
+        return format_tool_error(
+            tool="call_searcher",
+            error_code="NO_SEARCH_SOURCES_CONFIGURED",
+            message="Searcher source handlers are not configured.",
+            retryable=False,
         )
 
     agent = SearcherAgent(
         problem_memory=problem_memory,
         source_handlers=_SEARCH_SOURCE_HANDLERS,
     )
+
+    # 重点说明：agent.run 不仅会返回 papers，也会返回 errors/recovered_errors。
+    # 这些错误字段会原样回传给 LLM，帮助模型决定下一步动作，
+    # 而不是像传统流程那样“空结果即静默降级”。
     result = agent.run(query=query, query_bundle=query_bundle)
-    payload = {
-        "status": "OK",
-        "tool": "call_searcher",
+    has_errors = bool(result.get("has_errors"))
+
+    payload: dict = {
         "query": query,
         "query_bundle": query_bundle or [],
         "paper_count": result.get("count", 0),
-        "papers": [item.get("path") for item in result.get("papers", [])],
+        "stages": result.get("stages", {}),
+        "papers": result.get("papers", []),
+        "has_errors": has_errors,
+        "error_count": int(result.get("error_count", 0) or 0),
+        "errors": result.get("errors", []),
+        "recovered_errors": result.get("recovered_errors", []),
+        "llm_action_hint": result.get("llm_action_hint", ""),
     }
     if extra_args:
         payload["extra_args"] = extra_args
-    return json.dumps(payload, ensure_ascii=False)
+    return format_tool_success(tool="call_searcher", data=payload)
 
 
 def _format_read_artifact_layer(path: str, layer: int) -> str:
-    """按层读取 artifact 文档。"""
+    """按层读取 artifact 文档（artifact_reader 内部已统一包络）。"""
     return read_artifact_layer(path=path, layer=layer)
+
+
+def _format_call_citation_reviewer(
+    cites: list[str] | None = None,
+    claim_spans: list[str] | None = None,
+    **extra_args,
+) -> str:
+    """调用 CitationReviewerAgent 并返回逐条引用审查结果。"""
+    problem_memory = get_current_problem_memory()
+    if problem_memory is None:
+        return format_tool_error(
+            tool="call_citation_reviewer",
+            error_code="NO_PROBLEM_MEMORY",
+            message="ProblemMemory context is missing for call_citation_reviewer.",
+            retryable=False,
+        )
+
+    normalized_cites = [(item or "").strip() for item in (cites or []) if (item or "").strip()]
+    normalized_spans = [str(item or "").strip() for item in (claim_spans or [])]
+
+    reviewer = CitationReviewerAgent(problem_memory=problem_memory)
+    review = reviewer.review(cites=normalized_cites, claim_spans=normalized_spans)
+
+    payload: dict = {
+        "cites": normalized_cites,
+        "claim_spans": normalized_spans,
+        "summary": review.get("summary", ""),
+        "items": review.get("items", []),
+        "fail_count": review.get("fail_count", 0),
+        "severity_suggestion": review.get("severity_suggestion", "MINOR_FLAW"),
+    }
+    if extra_args:
+        payload["extra_args"] = extra_args
+    return format_tool_success(tool="call_citation_reviewer", data=payload)
 
 
 # 函数名 → 可调用对象的映射
@@ -157,6 +150,7 @@ _TOOL_MAP: dict = {
     "run_python": _format_run_python,
     "call_searcher": _format_call_searcher,
     "read_artifact_layer": _format_read_artifact_layer,
+    "call_citation_reviewer": _format_call_citation_reviewer,
 }
 
 
@@ -173,7 +167,7 @@ def configure_searcher_sources(source_handlers: dict[str, Callable[[str, int], l
 
 def get_tool_schemas() -> list[dict]:
     """返回 OpenAI function calling 格式的 tools 列表。"""
-    return _TOOL_SCHEMAS
+    return _schema_get_tool_schemas()
 
 
 def execute_tool(function_name: str, arguments: dict) -> str:
@@ -183,8 +177,54 @@ def execute_tool(function_name: str, arguments: dict) -> str:
     """
     if function_name not in _TOOL_MAP:
         available = list(_TOOL_MAP.keys())
-        return f"[TOOL ERROR] Unknown tool: {function_name!r}. Available: {available}"
-    try:
-        return _TOOL_MAP[function_name](**arguments)
-    except Exception as exc:
-        return f"[TOOL ERROR] {function_name} raised {type(exc).__name__}: {exc}"
+        return format_tool_error(
+            tool=function_name,
+            error_code="UNKNOWN_TOOL",
+            message=f"Unknown tool: {function_name!r}.",
+            retryable=False,
+            detail={"available": available},
+        )
+
+    normalized_arguments = arguments if isinstance(arguments, dict) else {}
+    attempts = max(1, _TOOL_RETRY_MAX_ATTEMPTS)
+    for attempt in range(1, attempts + 1):
+        try:
+            result = _TOOL_MAP[function_name](**normalized_arguments)
+            parsed = parse_tool_payload(result)
+            error_payload = extract_tool_error(parsed)
+
+            if error_payload and bool(error_payload.get("retryable")) and attempt < attempts:
+                if _TOOL_RETRY_BACKOFF_SECONDS > 0:
+                    time.sleep(_TOOL_RETRY_BACKOFF_SECONDS)
+                continue
+            return result
+        except BaseException as exc:
+            # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。
+            # 目标是把“中断类错误”也转换为结构化信息交给 LLM，
+            # 而不是让整个主链路直接崩掉。
+            if isinstance(exc, (SystemExit, GeneratorExit)):
+                raise
+
+            retryable = _is_retryable_exception(exc)
+            if isinstance(exc, KeyboardInterrupt):
+                retryable = True
+
+            if retryable and attempt < attempts:
+                if _TOOL_RETRY_BACKOFF_SECONDS > 0:
+                    time.sleep(_TOOL_RETRY_BACKOFF_SECONDS)
+                continue
+
+            return format_tool_error(
+                tool=function_name,
+                error_code="TOOL_RUNTIME_EXCEPTION",
+                message=f"{function_name} raised {type(exc).__name__}: {exc}",
+                retryable=retryable,
+                detail={"attempt": attempt, "max_attempts": attempts},
+            )
+
+    return format_tool_error(
+        tool=function_name,
+        error_code="UNEXPECTED_TOOL_MIDDLEWARE_STATE",
+        message="Tool middleware reached an unexpected terminal state.",
+        retryable=False,
+    )

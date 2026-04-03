@@ -6,7 +6,8 @@
 
 本方案完全基于当前代码现状梳理，核心代码参考：
 - [src/core/orchestrator.py](src/core/orchestrator.py#L12)
-- [src/core/pipeline.py](src/core/pipeline.py)
+- [src/core/agent.py](src/core/agent.py)
+- [src/agents/verifier.py](src/agents/verifier.py)
 - [src/core/state.py](src/core/state.py#L42)
 - [src/models/llm_client.py](src/models/llm_client.py#L16)
 - [src/tools/registry.py](src/tools/registry.py)
@@ -19,11 +20,11 @@
 
 你现在的系统可以理解成：
 1. 一个固定流程的总控器（Orchestrator）。
-2. 三个“函数节点”按顺序跑（Generator -> Verifier -> Reviser/Generator）。
-3. Verifier 有工具能力，Generator/Reviser 几乎没有工具能力。
-4. 状态以内存对象为主，文件日志主要在 data/logs 下，尚未形成“每题一个记忆目录”的结构。所有状态都堆在一个 history 里，属于“流水账”。
+2. 三个“对象化 Agent 节点”按路由推进（Generator -> Verifier -> Reviser/Generator）。
+3. 三个 Agent 都有工具能力，并按 stage allowlist 做权限隔离。
+4. 状态已按题目落盘到 runs/{problem_id}（state.json、history.jsonl、artifact/*），支持问题级记忆与分层读取。
 
-所以它目前更像“有迭代的单智能体流水线”。
+所以它目前是“固定主循环 + 多Agent 协作 + 问题级记忆”的 MVP 形态。
 
 你要变成的是：
 
@@ -106,15 +107,15 @@
 
 ### 1.5 当前代码中的高优先级风险（建议先修）
 
-1. 日志与目标目录结构不一致
-- 当前 raw 事件写入 [src/utils/logger.py](src/utils/logger.py#L11) 指向 data/logs。
-- 目标方案要求每题 runs/{problem_id}/history.jsonl。
-- 建议：通过 ProblemMemory 统一落盘，不再让 Orchestrator 直接依赖 data/logs。
+1. 日志路径存在兼容双写风险
+- 当前主路径已迁移到 runs/{problem_id}/history.jsonl。
+- 仍保留 legacy 镜像能力时，容易造成“看错日志来源”的运维混淆。
+- 建议：默认关闭 legacy 镜像，仅在回归对比时显式开启。
 
-1. parser 目前只支持单标签提取
-- [src/utils/parser.py](src/utils/parser.py#L8) 的 extract_xml_tag 只取首个标签块。
-- 目标方案需要多个 lemma、多个 cite、verified_lemmas。
-- 建议：增加 extract_xml_tags 与结构化解析函数。
+2. parser 入口已收敛
+- 当前统一入口为 [src/utils/parsing/parser.py](src/utils/parsing/parser.py)。
+- 旧入口已删除，避免导入分裂和重复实现。
+- 建议：新增解析能力时仅在 parsing 子包扩展。
 
 ### 1.6 三项目参考点是如何实现的（代码级拆解 + 迁移结论）
 
@@ -235,8 +236,8 @@
 3. typing 联合类型（如 str | None）：把接口约束写清楚，降低函数调用误用（场景：[src/core/orchestrator.py](src/core/orchestrator.py)）。
 4. OpenAI Function Calling：让工具调用变成结构化函数路由，便于审计和扩展（场景：[src/models/llm_client.py](src/models/llm_client.py#L224)）。
 5. subprocess：把 run_python 放进子进程隔离执行，降低主进程被污染风险（场景：[src/tools/code_executor.py](src/tools/code_executor.py#L13)）。
-6. threading + join 超时：给离线摘要调用加硬超时，避免工作日志构建卡死（场景：[src/utils/worklog_builder.py](src/utils/worklog_builder.py#L116)）。
-7. pathlib：统一路径拼接和跨平台目录管理，减少 Windows/Linux 差异问题（场景：[src/utils/logger.py](src/utils/logger.py#L11)）。
+6. threading + join 超时：给离线摘要调用加硬超时，避免工作日志构建卡死（场景：[src/utils/logging/worklog_builder.py](src/utils/logging/worklog_builder.py#L116)）。
+7. pathlib：统一路径拼接和跨平台目录管理，减少 Windows/Linux 差异问题（场景：[src/utils/logging/logger.py](src/utils/logging/logger.py#L11)）。
 8. yaml 配置替换环境变量：把密钥和模型参数从代码中剥离，便于复现实验（场景：[src/core/config.py](src/core/config.py#L8)）。
 9. tenacity（建议新增）：把 LLM/网络重试策略标准化，替代分散手写重试逻辑（建议场景：重构 [src/models/llm_client.py](src/models/llm_client.py)）。
 10. contextvars（建议新增）：实现“同题共享、跨题隔离”的 ProblemMemory 上下文传递（建议场景：新增 src/memory/problem_memory.py）。
@@ -262,7 +263,7 @@
 
 1. 数据加载
 - 负责读取题目与 benchmark。
-- 现有文件：[src/utils/data_loader.py](src/utils/data_loader.py)
+- 现有文件：[src/utils/evaluation/data_loader.py](src/utils/evaluation/data_loader.py)
 
 2. 预处理
 - 负责 prompt 注入、上下文摘要拼接、输入标准化。
@@ -278,12 +279,12 @@
 
 5. 推理管道
 - 负责 Generator/Reviser/Verifier/Searcher 的 run。
-- 现状是函数式：[src/core/pipeline.py](src/core/pipeline.py)
-- 建议改为对象式：src/agents/*.py
+- 当前已对象式：[src/agents/base.py](src/agents/base.py)、[src/agents/generator.py](src/agents/generator.py)、[src/agents/reviser.py](src/agents/reviser.py)、[src/agents/verifier.py](src/agents/verifier.py)、[src/agents/searcher.py](src/agents/searcher.py)
+- 由 [src/core/agent.py](src/core/agent.py) 统一装配运行时依赖。
 
 6. 结果解析
 - 负责 XML 标签解析、lemma 解析、cite 解析。
-- 现有文件：[src/utils/parser.py](src/utils/parser.py)
+- 现有文件：[src/utils/parsing/parser.py](src/utils/parsing/parser.py)
 
 7. 自动化评估
 - 负责 answerbench/proofbench/gradingbench 批评测。
@@ -294,11 +295,11 @@
 - history.jsonl 原始事件。
 - state.json 快照。
 - artifact 实体内容。
-- 现有文件：[src/utils/logger.py](src/utils/logger.py)、[src/utils/worklog_builder.py](src/utils/worklog_builder.py)
+- 现有文件：[src/utils/logging/logger.py](src/utils/logging/logger.py)、[src/utils/logging/worklog_builder.py](src/utils/logging/worklog_builder.py)
 
 9. 配置管理
 - 负责 settings 与 prompts 加载。
-- 现有文件：[src/core/config.py](src/core/config.py)、[config/settings.yaml](config/settings.yaml)、[config/prompts.yaml](config/prompts.yaml)
+- 现有文件：[src/core/config.py](src/core/config.py)、[config/settings.yaml](config/settings.yaml)、[config/prompts](config/prompts)
 
 10.  测试
 - 负责单测、集成测试、实时监控。
@@ -312,38 +313,76 @@
 AletheiaReproduction/
   main.py
   config/
+    default.yaml
     settings.yaml
-    prompts.yaml
+    prompts/
+      generator.yaml
+      reviser.yaml
+      verifier.yaml
+      searcher.yaml
+      citation_reviewer.yaml
+      final.yaml
   scripts/
     run_imobench.py
     run_proofbench_advanced.py
   src/
     __init__.py
+    agents/
+      __init__.py
+      base.py
+      generator.py
+      reviser.py
+      verifier.py
+      searcher.py
+      citation_reviewer.py
     core/
       __init__.py
       agent.py
       config.py
+      context_builder.py
       finalizer.py
       orchestrator.py
-      pipeline.py
       state.py
+    memory/
+      __init__.py
+      state.py
+      problem_memory.py
     models/
       __init__.py
       llm_client.py
     tools/
       __init__.py
+      artifact_reader.py
       code_executor.py
       registry.py
+      search.py
     utils/
       __init__.py
-      data_loader.py
-      evaluator.py
-      logger.py
-      parser.py
-      raw_log_reader.py
-      worklog_builder.py
+      parsing/
+        __init__.py
+        parser.py
+        reference_builder.py
+      evaluation/
+        __init__.py
+        data_loader.py
+        evaluator.py
+      logging/
+        __init__.py
+        logger.py
+        raw_log_reader.py
+        worklog_builder.py
   tests/
     realtime_e2e_monitor.py
+    test_agent_tool_policy.py
+    test_citation_review.py
+    test_finalizer_reference.py
+    test_infrastructure.py
+    test_orchestrator_route.py
+    test_parser_contract.py
+    test_pipeline_contracts.py
+    test_problem_memory.py
+    test_searcher_dedup.py
+    test_stage_integration.py
   bin/
     tool/
       _http_utils.py
@@ -356,21 +395,21 @@ AletheiaReproduction/
 1. [main.py](main.py)：CLI 入口，读取题目、创建 Agent、输出结果并可生成 worklog。
 2. [scripts/run_imobench.py](scripts/run_imobench.py)：批量评测三类数据集并输出统计结果。
 3. [scripts/run_proofbench_advanced.py](scripts/run_proofbench_advanced.py)：只跑 proofbench 的 advanced 子集。
-4. [src/core/agent.py](src/core/agent.py)：当前门面类，装配 pipeline/orchestrator/logger/finalizer。
+4. [src/core/agent.py](src/core/agent.py)：当前门面类，装配 AgentRuntime / Orchestrator / Logger / Finalizer。
 5. [src/core/orchestrator.py](src/core/orchestrator.py)：当前核心状态机，负责节点调用和路由。
-6. [src/core/pipeline.py](src/core/pipeline.py)：当前函数式节点实现（generator/verifier/reviser/final）。
+6. [src/agents/base.py](src/agents/base.py)：对象化 Agent 基类与阶段执行循环（具体节点在 src/agents/*.py）。
 7. [src/core/state.py](src/core/state.py)：当前状态模型（ProofState/VerificationLog/枚举）。
 8. [src/core/config.py](src/core/config.py)：配置和 prompt 加载，支持环境变量替换。
 9. [src/core/finalizer.py](src/core/finalizer.py)：构造最终输出文本（成功/失败/部分进展）。
 10. [src/models/llm_client.py](src/models/llm_client.py)：LLM 客户端，支持 thinking、流式、工具调用。
 11. [src/tools/registry.py](src/tools/registry.py)：工具 schema 注册与统一执行路由。
 12. [src/tools/code_executor.py](src/tools/code_executor.py)：Python 子进程沙箱执行。
-13. [src/utils/parser.py](src/utils/parser.py)：输出标签解析与 verdict 解析。
-14. [src/utils/logger.py](src/utils/logger.py)：JSONL 事件追加与 artifact markdown 保存。
-15. [src/utils/raw_log_reader.py](src/utils/raw_log_reader.py)：读取 raw JSONL。
-16. [src/utils/worklog_builder.py](src/utils/worklog_builder.py)：把 JSONL 转成可读 markdown 报告。
-17. [src/utils/data_loader.py](src/utils/data_loader.py)：读取 benchmark CSV 和回填 ground truth。
-18. [src/utils/evaluator.py](src/utils/evaluator.py)：短答和证明完整度的简单评测。
+13. [src/utils/parsing/parser.py](src/utils/parsing/parser.py)：输出标签解析与 verdict 解析。
+14. [src/utils/logging/logger.py](src/utils/logging/logger.py)：JSONL 事件追加与 artifact markdown 保存。
+15. [src/utils/logging/raw_log_reader.py](src/utils/logging/raw_log_reader.py)：读取 raw JSONL。
+16. [src/utils/logging/worklog_builder.py](src/utils/logging/worklog_builder.py)：把 JSONL 转成可读 markdown 报告。
+17. [src/utils/evaluation/data_loader.py](src/utils/evaluation/data_loader.py)：读取 benchmark CSV 和回填 ground truth。
+18. [src/utils/evaluation/evaluator.py](src/utils/evaluation/evaluator.py)：短答和证明完整度的简单评测。
 19. [tests/realtime_e2e_monitor.py](tests/realtime_e2e_monitor.py)：E2E 实时监控脚本。
 20. [bin/tool/_http_utils.py](bin/tool/_http_utils.py)：网络抓取重试与 SSL 降级工具。
 21. [bin/tool/web_search.py](bin/tool/web_search.py)：arXiv 搜索和 LaTeX 抽取。
@@ -701,7 +740,7 @@ class ProblemMemory:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 ~~~
 
-#### 建议二：在 src/utils/parser.py 增加多标签提取
+#### 建议二：在 src/utils/parsing/parser.py 增加多标签提取
 
 ~~~python
 import re

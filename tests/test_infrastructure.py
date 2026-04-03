@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from src.utils.logger import append_raw_event
-from src.utils.raw_log_reader import load_raw_events, resolve_run_log_path
-from src.utils.worklog_builder import WorklogBuilder
+from src.utils.logging.logger import append_raw_event
+from src.utils.logging.raw_log_reader import load_raw_events, resolve_run_log_path
+from src.utils.logging.worklog_builder import WorklogBuilder
 
 
 def test_log_path_logger_writes_to_runs(tmp_path: Path) -> None:

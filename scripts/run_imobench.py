@@ -3,7 +3,7 @@
 支持三类数据集，各取前 N 题（默认 30）逐题运行 Agent 并统计指标：
 
   answerbench  — 短答题：提取 \\boxed{} 答案与 ground truth 比对，统计 Exact Match Accuracy
-  proofbench   — 证明题：统计证明格式完整率（has_preliminary_solution）和 CORRECT 裁决率
+    proofbench   — 证明题：统计 solution 标签完整率（has_preliminary_solution）和 CORRECT 裁决率
   gradingbench — 评分题：使用 Grader Agent 对已有 student response 打分，
                  与人工 Reward 标签（Correct/Partial/Almost/Incorrect）比对
 
@@ -23,7 +23,7 @@ answerbench:
   - exact_match_accuracy : 严格 LaTeX 归一化后与 ground truth 相同的比例
 
 proofbench:
-  - format_complete_rate : 解答含 "### Preliminary Solution ###" 标记的比例
+    - format_complete_rate : 解答含 `<solution>...</solution>` 标签的比例
   - correct_verdict_rate : 经 Verifier 裁决为 CORRECT 的比例（需 max_turns≥1）
   - has_final_answer_rate: state.final_answer 非 None 的比例
 
@@ -52,7 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()
-from src.utils.raw_log_reader import load_raw_events, resolve_run_artifact_path, resolve_run_log_path
+from src.utils.logging.raw_log_reader import load_raw_events, resolve_run_artifact_path, resolve_run_log_path
 
 _W = 72
 
@@ -63,37 +63,37 @@ def _build_run_id(problem_id: str) -> str:
     return f"{problem_id}_{ts}"
 
 
-def _serialize_history(history) -> list[dict]:
-    """将 Agent history 序列化为 raw-only 结构。"""
+def _serialize_history(events: list[dict]) -> list[dict]:
+    """将 raw 事件流序列化为 benchmark 可读历史结构。"""
     output: list[dict] = []
-    for h in history:
-        node = getattr(h, "agent_node", "")
+    for event in events:
+        node = str(event.get("agent_node", ""))
+        tool_trace = event.get("tool_calls_trace", []) or []
         entry: dict = {
-            "turn_id": getattr(h, "turn_id", None),
+            "turn_id": event.get("turn_id"),
             "agent_node": node,
-            "decision": str(h.decision.value) if getattr(h, "decision", None) else None,
-            "tool_calls_count": len(getattr(h, "tool_calls_trace", []) or []),
-            "timestamp": getattr(h, "timestamp", None),
+            "decision": event.get("decision"),
+            "tool_calls_count": len(tool_trace),
+            "timestamp": event.get("timestamp"),
         }
 
         if node in ("GENERATOR", "REVISER"):
-            cot = getattr(h, "extracted_cot", "") or ""
-            content = getattr(h, "content", "") or ""
+            cot = str(event.get("reasoning_content", "") or "")
+            content = str(event.get("content", "") or "")
             entry.update({
                 "reasoning_full": cot,
                 "content_full": content,
             })
         elif node == "VERIFIER":
-            phase1 = getattr(h, "phase1_analysis", "") or ""
-            verification_report = getattr(h, "verification_report", "") or ""
-            full_verification = getattr(h, "full_verification_text", "") or ""
-            tool_calls = getattr(h, "tool_calls_trace", []) or []
+            phase1 = str(event.get("phase1_analysis", "") or "")
+            verification_report = str(event.get("verification_report", "") or "")
+            full_verification = str(event.get("full_verification_text", "") or "")
             entry.update({
                 "phase1_full": phase1,
-                "tool_calls": tool_calls,
+                "tool_calls": tool_trace,
                 "phase3_full": full_verification,
                 "verification_report": verification_report,
-                "parse_error": getattr(h, "parse_error", None),
+                "parse_error": event.get("parse_error"),
             })
         output.append(entry)
     return output
@@ -104,12 +104,21 @@ def _last_verifier_decision(history: list[dict]) -> str | None:
     return verifier[-1].get("decision") if verifier else None
 
 
+def _read_run_history(run_id: str, runs_root: Path) -> list[dict]:
+    """读取并序列化单次 run 的 raw 历史事件。"""
+    try:
+        events = load_raw_events(problem_id=run_id, runs_root=runs_root)
+    except Exception:
+        return []
+    return _serialize_history(events)
+
+
 def _normalize_lemma_text(value: object) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
 def _collect_run_quality_metrics(run_id: str, runs_root: Path) -> dict:
-    from src.utils.parser import parse_lemmas
+    from src.utils.parsing.parser import parse_lemmas
 
     metric = {
         "lemma_candidate_count": 0,
@@ -280,8 +289,8 @@ def _human_to_3way(reward: str) -> str:
 
 def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict], dict]:
     """运行 AnswerBench，返回 (per-item results, summary)。"""
-    from src.utils.evaluator import check_answer
-    from src.utils.parser import extract_xml_tag, normalize_short_answer
+    from src.utils.evaluation.evaluator import check_answer
+    from src.utils.parsing.parser import extract_xml_tag, normalize_short_answer
 
     results = []
     for item in data:
@@ -301,7 +310,7 @@ def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict
 
             correct = check_answer(predicted_for_check, item["answer"])
             elapsed = time.time() - t0
-            history_info = _serialize_history(state.history)
+            history_info = _read_run_history(run_id=run_id, runs_root=runs_root)
             final_verifier_decision = _last_verifier_decision(history_info)
             quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
@@ -371,8 +380,7 @@ def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict
 
 def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict], dict]:
     """运行 ProofBench，返回 (per-item results, summary)。"""
-    from src.utils.evaluator import check_proof_completeness
-    from src.core.state import VerificationDecision
+    from src.utils.evaluation.evaluator import check_proof_completeness
 
     results = []
     for item in data:
@@ -383,13 +391,9 @@ def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict]
             state = agent.solve(run_id, item["problem"], ground_truth=item.get("solution", ""))
             predicted = state.final_answer or state.current_proof
             completeness = check_proof_completeness(predicted)
-            # 最终 Verifier 裁决（取最后一个 VERIFIER 历史项）
-            verifier_entries = [e for e in state.history if e.agent_node == "VERIFIER"]
-            final_decision = (
-                verifier_entries[-1].decision.value if verifier_entries else "NO_VERDICT"
-            )
             elapsed = time.time() - t0
-            history_info = _serialize_history(state.history)
+            history_info = _read_run_history(run_id=run_id, runs_root=runs_root)
+            final_decision = _last_verifier_decision(history_info) or "NO_VERDICT"
             quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
                 "problem_id": pid,
@@ -695,7 +699,7 @@ def main() -> None:
     from src.core.agent import AletheiaAgent
     from src.core.config import load_config, load_prompts
     from src.models.llm_client import create_llm_client
-    from src.utils.data_loader import (
+    from src.utils.evaluation.data_loader import (
         load_answerbench_full,
         load_gradingbench_full,
         load_proofbench_full,
@@ -790,7 +794,7 @@ def main() -> None:
 
     # ── 批量结束后按题生成新版 Markdown 工作日志 ────────────────────────
     if not args.no_worklog:
-        from src.utils.worklog_builder import WorklogBuilder
+        from src.utils.logging.worklog_builder import WorklogBuilder
 
         wb = WorklogBuilder(llm_config=config)
         generated_count = 0

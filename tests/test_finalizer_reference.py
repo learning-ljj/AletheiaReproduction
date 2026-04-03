@@ -2,7 +2,11 @@ from pathlib import Path
 
 from src.core.finalizer import build_final_output
 from src.memory.problem_memory import ProblemMemory
-from src.utils.reference_builder import build_references, export_references_bibtex, references_to_bibtex
+from src.utils.parsing.reference_builder import (
+    build_references,
+    export_references_bibtex,
+    references_to_bibtex,
+)
 
 
 

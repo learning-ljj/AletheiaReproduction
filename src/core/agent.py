@@ -1,52 +1,129 @@
 """AletheiaAgent 门面：负责装配依赖并委托 Orchestrator。"""
 
+from typing import Callable
+
 from src.agents.generator import GeneratorAgent
 from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
-from src.core.finalizer import build_final_output
+from src.core.finalizer import build_final_output, call_final
 from src.core.orchestrator import Orchestrator
-from src.core.pipeline import call_final
 from src.core.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
-from src.tools.registry import execute_tool, get_tool_schemas
-from src.utils.logger import append_raw_event, save_final_output_markdown
+from src.tools.registry import (
+    configure_searcher_sources,
+    configure_tool_resilience,
+    execute_tool,
+    format_tool_error,
+    get_tool_schemas,
+)
+from src.tools.search_sources import build_default_source_handlers
+from src.utils.logging.logger import append_raw_event, save_final_output_markdown
+
+
+_AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
+    "generator": {"run_python", "call_searcher"},
+    "reviser": {"run_python", "call_searcher", "read_artifact_layer"},
+    "verifier": {"run_python", "read_artifact_layer", "call_citation_reviewer"},
+}
+
+
+def _filter_tool_schemas(tool_schemas: list[dict], allowed_names: set[str]) -> list[dict]:
+    """按白名单筛选可见的 tool schema。"""
+    filtered: list[dict] = []
+    for schema in tool_schemas:
+        name = schema.get("function", {}).get("name")
+        if name in allowed_names:
+            filtered.append(schema)
+    return filtered
+
+
+def _build_scoped_tool_executor(
+    base_executor: Callable[[str, dict], str],
+    allowed_names: set[str],
+) -> Callable[[str, dict], str]:
+    """构造仅允许白名单工具的执行器。"""
+
+    def _executor(function_name: str, arguments: dict) -> str:
+        if function_name not in allowed_names:
+            allowed_list = sorted(allowed_names)
+            return format_tool_error(
+                tool=function_name,
+                error_code="TOOL_NOT_PERMITTED_IN_STAGE",
+                message=(
+                    f"Tool {function_name!r} is not permitted in this agent stage. "
+                    f"Allowed: {allowed_list}"
+                ),
+                retryable=False,
+                detail={"allowed": allowed_list},
+            )
+        return base_executor(function_name, arguments)
+
+    return _executor
 
 
 class _AgentRuntime:
     """主链 Agent 运行时：直接装配 Generator/Verifier/Reviser 对象。"""
 
-    def __init__(self, llm_client, prompts, tool_schemas, tool_executor):
+    def __init__(
+        self,
+        llm_client,
+        prompts,
+        tool_schemas,
+        tool_executor,
+        *,
+        generator_max_tool_rounds: int = 5,
+        reviser_max_tool_rounds: int = 5,
+        verifier_max_tool_rounds: int = 5,
+    ):
         self.llm_client = llm_client
         self.prompts = prompts
-        self.tool_schemas = tool_schemas
-        self.tool_executor = tool_executor
+
+        generator_allowed = _AGENT_TOOL_ALLOWLIST["generator"]
+        reviser_allowed = _AGENT_TOOL_ALLOWLIST["reviser"]
+        verifier_allowed = _AGENT_TOOL_ALLOWLIST["verifier"]
+
+        generator_tools = _filter_tool_schemas(tool_schemas, generator_allowed)
+        reviser_tools = _filter_tool_schemas(tool_schemas, reviser_allowed)
+        verifier_tools = _filter_tool_schemas(tool_schemas, verifier_allowed)
+
+        generator_executor = _build_scoped_tool_executor(tool_executor, generator_allowed)
+        reviser_executor = _build_scoped_tool_executor(tool_executor, reviser_allowed)
+        verifier_executor = _build_scoped_tool_executor(tool_executor, verifier_allowed)
+
         self.generator_agent = GeneratorAgent(
             llm_client=self.llm_client,
             system_prompt=self.prompts["generator"]["system"],
-            tools=self.tool_schemas,
-            tool_executor=self.tool_executor,
-            max_tool_rounds=5,
+            tools=generator_tools,
+            tool_executor=generator_executor,
+            max_tool_rounds=generator_max_tool_rounds,
         )
         self.verifier_agent = VerifierAgent(
             llm_client=self.llm_client,
             prompts=self.prompts,
-            tools=self.tool_schemas,
-            tool_executor=self.tool_executor,
+            tools=verifier_tools,
+            tool_executor=verifier_executor,
+            max_tool_rounds=verifier_max_tool_rounds,
         )
         self.reviser_agent = ReviserAgent(
             llm_client=self.llm_client,
             system_prompt=self.prompts["reviser"]["system"],
-            tools=self.tool_schemas,
-            tool_executor=self.tool_executor,
-            max_tool_rounds=5,
+            tools=reviser_tools,
+            tool_executor=reviser_executor,
+            max_tool_rounds=reviser_max_tool_rounds,
         )
 
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        layer1_summaries: list[str] | None = None,
+    ):
         # C31: 主路径改为 GeneratorAgent 对象执行。
         return self.generator_agent.run(
             problem_text=problem_text,
             error_lessons=lesson,
+            layer1_summaries=layer1_summaries,
         )
 
     def call_verifier(self, problem_text: str, proof_text: str):
@@ -132,12 +209,27 @@ class AletheiaAgent:
         self.tool_schemas = get_tool_schemas()
         self.tool_executor = execute_tool
 
+        resilience_cfg = config.get("resilience", {}) if isinstance(config, dict) else {}
+        default_rounds = int(resilience_cfg.get("default_max_tool_rounds", 5))
+        generator_rounds = int(resilience_cfg.get("generator_max_tool_rounds", default_rounds))
+        reviser_rounds = int(resilience_cfg.get("reviser_max_tool_rounds", default_rounds))
+        verifier_rounds = int(resilience_cfg.get("verifier_max_tool_rounds", default_rounds))
+
+        configure_tool_resilience(
+            max_attempts=int(resilience_cfg.get("tool_retry_max_attempts", 1)),
+            backoff_seconds=float(resilience_cfg.get("tool_retry_backoff_seconds", 0.2)),
+        )
+        configure_searcher_sources(build_default_source_handlers(config))
+
         # 在构造阶段完成依赖装配：solve 只负责创建状态并委托运行。
         agent_runtime = _AgentRuntime(
             self.llm_client,
             self.prompts,
             self.tool_schemas,
             self.tool_executor,
+            generator_max_tool_rounds=generator_rounds,
+            reviser_max_tool_rounds=reviser_rounds,
+            verifier_max_tool_rounds=verifier_rounds,
         )
         self.orchestrator = Orchestrator(
             max_turns=self.max_turns,

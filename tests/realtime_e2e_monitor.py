@@ -21,8 +21,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.core.config import load_config
-from src.utils.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
-from src.utils.worklog_builder import WorklogBuilder
+from src.utils.logging.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
+from src.utils.logging.worklog_builder import WorklogBuilder
 
 
 def _now() -> str:

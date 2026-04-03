@@ -29,6 +29,8 @@ class ReviserAgent(BaseAgent):
 
     @staticmethod
     def _build_input(problem_text: str, previous_solution: str, verification_report: str) -> str:
+        # Reviser 的输入是“同题目 + 旧答案 + verifier 报告”三件套。
+        # 大白话：它不是从零写，而是拿着批注做定点返修。
         return (
             problem_text.strip()
             + "\n\n---\nPrevious Solution:\n"
@@ -37,10 +39,6 @@ class ReviserAgent(BaseAgent):
             + (verification_report or "").strip()
         )
 
-    @staticmethod
-    def _has_contract(text: str) -> bool:
-        return "<solution>" in text and "</solution>" in text
-
     def run(
         self,
         *,
@@ -48,16 +46,7 @@ class ReviserAgent(BaseAgent):
         previous_solution: str,
         verification_report: str,
     ) -> LLMResponse:
+        # 仅执行一次修订，不做“自我格式重试”，
+        # 修订结果是否仍有格式问题，下一轮统一交由 Verifier 审核。
         payload = self._build_input(problem_text, previous_solution, verification_report)
-        content = super().run(payload)
-        if self._has_contract(content):
-            return LLMResponse(content=content, reasoning_content="")
-
-        retry_payload = (
-            payload
-            + "\n\nFORMAT REQUIRED:\n"
-            + "<verdict>...</verdict>\n"
-            + "<solution>...</solution>"
-        )
-        retry_content = super().run(retry_payload)
-        return LLMResponse(content=retry_content, reasoning_content="")
+        return super().run(payload)

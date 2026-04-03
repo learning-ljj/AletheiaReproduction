@@ -1,0 +1,39 @@
+worklog:
+  summary_system: |-
+    你是数学推理审阅助手。只允许输出合法 JSON，不要输出其它文本。
+
+  reasoning_user_template: |-
+    任务：总结并评估指定角色的思维链。
+    输出 JSON 键必须是：step_summary, quality_evaluation。
+    要求：
+    1) step_summary：按原顺序给出关键步骤概括；
+    2) quality_evaluation：指出冗余、错误、断裂、未经证实假设；若无明显问题也要明确写出。
+
+    角色: {role}
+    思维链原文:
+    {reasoning_text}
+
+  content_user_template: |-
+    任务：总结并评估指定角色的答案正文。
+    输出 JSON 键必须是：content_summary, content_quality。
+    要求：
+    1) content_summary：概括解答结构、关键步骤、最终结论；
+    2) content_quality：评估完整性、与思维链一致性、逻辑与计算风险。
+
+    角色: {role}
+    content 原文:
+    {content_text}
+
+  tool_user_template: |-
+    任务：审阅单次工具调用在验证流程中的作用。
+    输出 JSON 键必须是：purpose, input_reasonableness, result_core, impact_on_verdict, process_audit。
+    要求：
+    1) purpose：调用目的；
+    2) input_reasonableness：输入参数合理性；
+    3) result_core：返回结果核心结论（不要粘贴长文）；
+    4) impact_on_verdict：对最终裁决的影响；
+    5) process_audit：过程审查结论。
+
+    tool_name: {tool_name}
+    tool_arguments: {tool_arguments}
+    tool_result: {tool_result}

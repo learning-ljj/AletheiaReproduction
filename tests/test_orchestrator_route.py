@@ -98,6 +98,38 @@ class _PartialPipeline:
         return RunStatus.PARTIAL.value, "progress made", final_solution, final_xml
 
 
+class _PartialUndoneNonePipeline:
+    def call_generator(self, problem_text: str, lesson: str | None = None):
+        return _Resp(content="<solution>draft</solution>", reasoning_content="gen")
+
+    def call_verifier(self, problem_text: str, proof_text: str):
+        return (
+            "<verdict>MINOR_FLAW</verdict>",
+            VerificationDecision.MINOR_FLAW,
+            "gap",
+            [],
+            "phase1",
+        )
+
+    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        return _Resp(content=previous_solution, reasoning_content="rev")
+
+    def call_final(
+        self,
+        problem_text: str,
+        current_solution: str,
+        last_verifier_decision: str,
+        last_verification_report: str,
+    ):
+        final_solution = "<done>done-part</done>\n<undone>无</undone>"
+        final_xml = (
+            "<status>PARTIAL_PROGRESS</status>\n"
+            "<verdict>progress made</verdict>\n"
+            f"<solution>{final_solution}</solution>"
+        )
+        return RunStatus.PARTIAL.value, "progress made", final_solution, final_xml
+
+
 class _FailPipeline:
     def call_generator(self, problem_text: str, lesson: str | None = None):
         raise TimeoutError("generator timeout")
@@ -122,6 +154,7 @@ class _ParseRecoverPipeline:
     def __init__(self):
         self.generator_calls = 0
         self.verifier_calls = 0
+        self.reviser_calls = 0
 
     def call_generator(self, problem_text: str, lesson: str | None = None):
         self.generator_calls += 1
@@ -140,6 +173,7 @@ class _ParseRecoverPipeline:
         )
 
     def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        self.reviser_calls += 1
         return _Resp(content=previous_solution, reasoning_content="rev")
 
     def call_final(
@@ -228,6 +262,25 @@ def test_persist_partial_state_and_history(tmp_path: Path) -> None:
     assert len(history) >= 4
 
 
+def test_partial_output_rewrites_trivial_undone_block(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    orchestrator = Orchestrator(
+        max_turns=1,
+        pipeline=_PartialUndoneNonePipeline(),
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-partial-undone", problem_text="demo")
+
+    out = orchestrator.run(state)
+
+    assert out.status == RunStatus.PARTIAL
+    assert out.final_answer is not None
+    assert "<undone>无</undone>" not in out.final_answer
+    assert "尚未形成可通过 verifier 的完整证明" in out.final_answer
+
+
 def test_persist_failure_state_and_history(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
@@ -263,7 +316,8 @@ def test_parse_error_invalid_verdict_recover_route(tmp_path: Path) -> None:
     out = orchestrator.run(state)
 
     assert out.status == RunStatus.SUCCESS
-    assert pipeline.generator_calls >= 2
+    assert pipeline.generator_calls >= 1
+    assert pipeline.reviser_calls >= 1
     events = _read_history_events(runs_root, "p-parse-recover")
     parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
     assert parse_events

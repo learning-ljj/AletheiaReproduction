@@ -1,9 +1,8 @@
-"""核心数据结构：ProofState, VerificationLog, VerificationDecision。"""
+"""核心数据结构：ProofState、VerificationDecision 与运行状态枚举。"""
 
-from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from src.memory.state import ProblemSnapshot, StageSnapshot, StateValidationError
 
 
@@ -23,25 +22,6 @@ class RunStatus(str, Enum):
     FAILED = "FAILED"         # 超出能力范围 / 运行时错误
 
 
-class VerificationLog(BaseModel):
-    """单轮验证的完整记录，用于持久化和状态追踪。"""
-
-    turn_id: int
-    agent_node: str                              # 'GENERATOR' / 'VERIFIER' / 'REVISER'
-    full_verification_text: str | None = None    # Verifier 完整输出
-    decision: VerificationDecision | None = None # Verifier 裁决
-    verification_report: str | None = None       # 提取的验证报告
-    phase1_analysis: str | None = None           # Verifier Phase 1 初步分析文本
-    tool_calls_trace: list[dict] = Field(default_factory=list)
-    verified_lemmas: list[str] = Field(default_factory=list)
-    citation_review: str | None = None
-    extracted_cot: str | None = None             # Generator/Reviser 思维链
-    content: str | None = None                   # Generator/Reviser 最终解答
-    parse_error: str | None = None               # 解析失败信息（严格 XML 模式）
-    schema_version: str = "1.0"
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
 class ProofState(BaseModel):
     """整体任务状态，贯穿 Agent 生命周期。"""
 
@@ -49,7 +29,6 @@ class ProofState(BaseModel):
     problem_text: str
     ground_truth: str | None = None
     current_proof: str = ""
-    history: list[VerificationLog] = Field(default_factory=list)
     iteration_count: int = 0
     final_answer: str | None = None
     status: RunStatus | None = None
@@ -60,7 +39,6 @@ class ProofState(BaseModel):
 __all__ = [
     "VerificationDecision",
     "RunStatus",
-    "VerificationLog",
     "ProofState",
     "ProblemSnapshot",
     "StageSnapshot",

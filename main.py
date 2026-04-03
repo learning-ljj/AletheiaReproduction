@@ -13,9 +13,9 @@ load_dotenv()
 from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
 from src.core.state import RunStatus
-from src.utils.data_loader import lookup_ground_truth
-from src.utils.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
-from src.utils.worklog_builder import WorklogBuilder
+from src.utils.evaluation.data_loader import lookup_ground_truth
+from src.utils.logging.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
+from src.utils.logging.worklog_builder import WorklogBuilder
 
 
 def _configure_stdio_utf8() -> None:

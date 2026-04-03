@@ -1,17 +1,19 @@
+import json
 from pathlib import Path
 
 from src.agents.generator import GeneratorAgent
 from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
+from src.agents.base import BaseAgent
 from src.core.config import load_prompts
 from src.core.orchestrator import Orchestrator
 from src.core.state import ProofState, RunStatus, VerificationDecision
 
 
 class _Resp:
-    def __init__(self, content: str):
+    def __init__(self, content: str, reasoning_content: str = ""):
         self.content = content
-        self.reasoning_content = ""
+        self.reasoning_content = reasoning_content
 
 
 class _FakeLLMForGenerator:
@@ -83,7 +85,7 @@ def test_generator_agent_returns_structured_output() -> None:
     assert "<solution>" in resp.content
 
 
-def test_generator_agent_retries_once_when_contract_missing() -> None:
+def test_generator_agent_does_not_retry_when_contract_missing() -> None:
     llm = _FakeLLMForGenerator([
         "draft without tags",
         "<verdict>PARTIAL</verdict>\n<solution>fixed</solution>",
@@ -96,8 +98,8 @@ def test_generator_agent_retries_once_when_contract_missing() -> None:
     )
 
     resp = agent.run(problem_text="demo")
-    assert "<solution>" in resp.content
-    assert llm.chat_calls == 2
+    assert resp.content == "draft without tags"
+    assert llm.chat_calls == 1
 
 
 
@@ -116,27 +118,132 @@ def test_prompt_verifier_contract_tags() -> None:
 
 
 def test_verifier_agent_adds_optional_contract_blocks() -> None:
-    def _runner(llm, prompts, problem_text, proof_text, tools, tool_executor):
-        return (
-            "<verdict>CORRECT</verdict>\n<verification>ok</verification>",
-            VerificationDecision.CORRECT,
-            "",
-            [],
-            "phase1",
-        )
+    class _FakeVerifierLLM:
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            if stream_prefix == "VERIFIER-P1":
+                return _Resp("phase1")
+            return _Resp("<verdict>CORRECT</verdict>\n<verification>ok</verification>")
+
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+            return _Resp("phase2")
+
+        @staticmethod
+        def clear_reasoning_content(messages):
+            return
 
     agent = VerifierAgent(
-        llm_client=object(),
-        prompts={},
+        llm_client=_FakeVerifierLLM(),
+        prompts={
+            "verifier": {
+                "system": "sys",
+                "phase1_user": "p1",
+                "phase2_user": "p2",
+                "phase3_user": "p3",
+            }
+        },
         tools=[],
         tool_executor=lambda function_name, arguments: "",
-        verifier_runner=_runner,
     )
 
     full_text, decision, _, _, _ = agent.run(problem_text="demo", proof_text="<solution>x</solution>")
     assert decision == VerificationDecision.CORRECT
     assert "<verified_lemmas>" in full_text
     assert "<citation_review>" in full_text
+
+
+def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
+    class _FakeVerifierLLM:
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            if stream_prefix == "VERIFIER-P1":
+                return _Resp("phase1")
+            return _Resp(
+                "<verdict>MINOR_FLAW</verdict>\n"
+                "<verification>"
+                "该处属于轻微问题：整数奇偶是众所周知的基础事实，形式不够严密但不影响结论。"
+                "</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>"
+            )
+
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+            return _Resp("phase2")
+
+        @staticmethod
+        def clear_reasoning_content(messages):
+            return
+
+    agent = VerifierAgent(
+        llm_client=_FakeVerifierLLM(),
+        prompts={
+            "verifier": {
+                "system": "sys",
+                "phase1_user": "p1",
+                "phase2_user": "p2",
+                "phase3_user": "p3",
+            }
+        },
+        tools=[],
+        tool_executor=lambda function_name, arguments: "",
+    )
+
+    full_text, decision, verification_report, _, _ = agent.run(
+        problem_text="demo",
+        proof_text="<solution>x</solution>",
+    )
+
+    assert decision == VerificationDecision.MINOR_FLAW
+    assert "基础事实" in verification_report
+    assert "<verdict>MINOR_FLAW</verdict>" in full_text
+
+
+def test_verifier_handles_candidate_without_solution_tag() -> None:
+    class _FakeVerifierLLM:
+        def __init__(self):
+            self.phase1_user_messages = []
+
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            if stream_prefix == "VERIFIER-P1":
+                self.phase1_user_messages.append(messages[-1]["content"])
+                return _Resp("phase1")
+            return _Resp(
+                "<verdict>MINOR_FLAW</verdict>\n"
+                "<verification>输出格式缺失 <solution> 标签，需由 Reviser 修复。</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>"
+            )
+
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+            return _Resp("phase2")
+
+        @staticmethod
+        def clear_reasoning_content(messages):
+            return
+
+    llm = _FakeVerifierLLM()
+    agent = VerifierAgent(
+        llm_client=llm,
+        prompts={
+            "verifier": {
+                "system": "sys",
+                "phase1_user": "P1::{solution}",
+                "phase2_user": "p2",
+                "phase3_user": "p3",
+            }
+        },
+        tools=[],
+        tool_executor=lambda function_name, arguments: "",
+    )
+
+    full_text, decision, verification_report, _, _ = agent.run(
+        problem_text="demo",
+        proof_text="draft without xml tags",
+    )
+
+    assert decision == VerificationDecision.MINOR_FLAW
+    assert "<solution>" in verification_report
+    assert llm.phase1_user_messages
+    assert "draft without xml tags" in llm.phase1_user_messages[0]
+    assert "<citation_review>NONE</citation_review>" in full_text
 
 
 def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
@@ -211,7 +318,7 @@ def test_reviser_agent_returns_solution_block() -> None:
     assert "<solution>" in resp.content
 
 
-def test_reviser_agent_retries_when_solution_missing() -> None:
+def test_reviser_agent_does_not_retry_when_solution_missing() -> None:
     llm = _FakeLLMForGenerator([
         "draft only",
         "<verdict>PARTIAL</verdict>\n<solution>fixed reviser output</solution>",
@@ -228,5 +335,98 @@ def test_reviser_agent_retries_when_solution_missing() -> None:
         previous_solution="<solution>old</solution>",
         verification_report="fix Step 2",
     )
-    assert "<solution>" in resp.content
-    assert llm.chat_calls == 2
+    assert resp.content == "draft only"
+    assert llm.chat_calls == 1
+
+
+def test_base_agent_clears_stage_memory_after_each_run() -> None:
+    class _RecordingLLM:
+        def __init__(self):
+            self.inputs = []
+
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            # 记录每次进入模型时的输入消息，确保没有跨 run 污染。
+            self.inputs.append([dict(item) for item in messages])
+            return _Resp("ok")
+
+    llm = _RecordingLLM()
+    agent = BaseAgent(
+        llm_client=llm,
+        system_prompt="sys",
+        tools=[],
+        tool_executor=None,
+    )
+
+    agent.run("first")
+    agent.run("second")
+
+    assert len(llm.inputs) == 2
+    assert len(llm.inputs[0]) == 2
+    assert len(llm.inputs[1]) == 2
+    assert llm.inputs[0][1]["content"] == "first"
+    assert llm.inputs[1][1]["content"] == "second"
+    assert agent.messages == []
+
+
+def test_reviser_reasoning_not_persisted_in_history(tmp_path: Path) -> None:
+    class _Pipeline:
+        def __init__(self):
+            self.verifier_calls = 0
+
+        def call_generator(self, problem_text: str, lesson: str | None = None):
+            return _Resp("<solution>draft</solution>", reasoning_content="gen-think")
+
+        def call_verifier(self, problem_text: str, proof_text: str):
+            self.verifier_calls += 1
+            if self.verifier_calls == 1:
+                return (
+                    "<verdict>MINOR_FLAW</verdict>\n"
+                    "<verification>need revise</verification>\n"
+                    "<verified_lemmas>NONE</verified_lemmas>\n"
+                    "<citation_review>NONE</citation_review>",
+                    VerificationDecision.MINOR_FLAW,
+                    "need revise",
+                    [],
+                    "phase1",
+                )
+            return (
+                "<verdict>CORRECT</verdict>\n"
+                "<verification>ok</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>",
+                VerificationDecision.CORRECT,
+                "",
+                [],
+                "phase1",
+            )
+
+        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+            return _Resp("<solution>revised</solution>", reasoning_content="rev-think-should-not-log")
+
+        def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
+            return RunStatus.PARTIAL.value, "", current_solution, ""
+
+    runs_root = tmp_path / "runs"
+    orchestrator = Orchestrator(
+        max_turns=2,
+        pipeline=_Pipeline(),
+        logger=_NoopLogger(),
+        finalizer=_SimpleFinalizer(),
+        runs_root=runs_root,
+    )
+    state = ProofState(problem_id="p-reviser-no-reason", problem_text="demo")
+
+    out = orchestrator.run(state)
+    assert out.status == RunStatus.SUCCESS
+
+    history_path = runs_root / "p-reviser-no-reason" / "history.jsonl"
+    lines = [line.strip() for line in history_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines]
+
+    reviser_events = [item for item in events if item.get("agent_node") == "REVISER"]
+    assert len(reviser_events) == 1
+    assert "reasoning_content" not in reviser_events[0]
+
+    generator_events = [item for item in events if item.get("agent_node") == "GENERATOR"]
+    assert len(generator_events) >= 1
+    assert "reasoning_content" in generator_events[0]

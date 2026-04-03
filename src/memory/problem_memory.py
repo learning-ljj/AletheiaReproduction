@@ -54,6 +54,7 @@ class ProblemMemory:
         self.papers_dir = self.artifact_dir / "papers"
         self.errors_dir = self.artifact_dir / "errors"
         self.citations_bib_path = self.artifact_dir / "citations.bib"
+        self.manifest_path = self.artifact_dir / "manifest.json"
 
     def init_dirs(self) -> None:
         self.lemmas_dir.mkdir(parents=True, exist_ok=True)
@@ -169,3 +170,68 @@ class ProblemMemory:
     def save_bib_entries(self, entries: list[str]) -> Path:
         """Persist BibTeX entries list to artifact/citations.bib."""
         return self.save_bibtex("\n\n".join((entry or "").strip() for entry in entries if entry))
+
+    def save_manifest(self, payload: dict[str, Any]) -> Path:
+        """Persist final machine-readable run manifest under artifact/manifest.json."""
+        if not isinstance(payload, dict):
+            raise TypeError("manifest payload must be a dict")
+        self.init_dirs()
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        self._atomic_write_text(self.manifest_path, serialized + "\n")
+        return self.manifest_path
+
+    @staticmethod
+    def _extract_frontmatter_summary(text: str) -> str | None:
+        stripped = (text or "").lstrip()
+        if not stripped.startswith("---"):
+            return None
+
+        lines = stripped.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return None
+
+        metadata: dict[str, str] = {}
+        for line in lines[1:]:
+            marker = line.strip()
+            if marker == "---":
+                break
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            metadata[key.strip().lower()] = value.strip()
+
+        summary = metadata.get("summary") or metadata.get("title")
+        if not summary:
+            return None
+        return summary.strip() or None
+
+    @staticmethod
+    def _first_non_empty_line(text: str) -> str | None:
+        for line in (text or "").splitlines():
+            value = line.strip()
+            if value:
+                return value
+        return None
+
+    def list_layer1_summaries(self, limit: int = 12) -> list[str]:
+        """Return lightweight layer1 summaries from lemma/paper artifacts."""
+        self.init_dirs()
+        out: list[str] = []
+        for folder in (self.lemmas_dir, self.papers_dir):
+            for path in sorted(folder.glob("*.md")):
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+
+                summary = self._extract_frontmatter_summary(text)
+                if not summary:
+                    summary = self._first_non_empty_line(text)
+                if not summary:
+                    continue
+
+                relative = path.relative_to(self.run_dir).as_posix()
+                out.append(f"{summary} [path:{relative}]")
+                if len(out) >= max(0, limit):
+                    return out
+        return out

@@ -1,6 +1,64 @@
 """最终输出构造器：统一成功、部分进展与失败场景的最终文案。"""
 
-from src.utils.parser import extract_xml_tag
+from src.models.llm_client import LLMClient
+from src.utils.parsing.parser import extract_xml_tag, parse_final_xml_output
+
+
+def _has_xml_tag(text: str | None, tag: str) -> bool:
+    """判断文本中是否包含完整的 XML 标签对。"""
+    if not text:
+        return False
+    return f"<{tag}>" in text and f"</{tag}>" in text
+
+
+def _has_final_contract(text: str | None) -> bool:
+    """FINAL 必须输出 status+verdict+solution 三段。"""
+    return _has_xml_tag(text, "status") and _has_xml_tag(text, "verdict") and _has_xml_tag(text, "solution")
+
+
+def call_final(
+    llm_client: LLMClient,
+    prompts: dict,
+    problem_text: str,
+    current_solution: str,
+    last_verifier_decision: str,
+    last_verification_report: str,
+) -> tuple[str, str, str, str]:
+    """在 verifier 轮次耗尽后，单次调用 FINAL 判定终态并给出最终报告。"""
+    final_prompts = prompts.get("final")
+    if not final_prompts:
+        raise ValueError("Missing prompts.final")
+
+    user_content = final_prompts["user"].format(
+        problem_statement=problem_text,
+        current_solution=current_solution,
+        last_verifier_decision=last_verifier_decision,
+        last_verification_report=last_verification_report,
+    )
+
+    messages: list[dict] = [
+        {"role": "system", "content": final_prompts["system"]},
+        {"role": "user", "content": user_content},
+    ]
+
+    retry_user = user_content + (
+        "\n\nFORMAT REQUIRED:\n"
+        "<status>PARTIAL_PROGRESS|BEYOND_CAPABILITY</status>\n"
+        "<verdict>...</verdict>\n"
+        "<solution>...</solution>"
+    )
+
+    resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL")
+    text = resp.content or ""
+    if not _has_final_contract(text):
+        messages[-1] = {"role": "user", "content": retry_user}
+        resp = llm_client.chat(messages, thinking=False, stream_prefix="FINAL")
+        text = resp.content or ""
+        if not _has_final_contract(text):
+            raise ValueError("FINAL output missing required <status>/<verdict>/<solution> tags")
+
+    status, verdict, solution = parse_final_xml_output(text)
+    return status, verdict, solution, text
 
 
 def build_final_output(

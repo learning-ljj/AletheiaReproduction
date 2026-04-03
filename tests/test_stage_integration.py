@@ -3,10 +3,9 @@ from pathlib import Path
 
 from src.agents.generator import GeneratorAgent
 from src.agents.verifier import VerifierAgent
-from src.core.state import VerificationDecision
 from src.memory.problem_memory import ProblemMemory, set_current_problem_memory
 from src.tools.registry import configure_searcher_sources, execute_tool, get_tool_schemas
-from src.utils.parser import extract_xml_tag
+from src.utils.parsing.parser import extract_xml_tag
 
 
 class _Resp:
@@ -62,8 +61,8 @@ def test_generator_searcher_bridge_integration(tmp_path: Path) -> None:
 
     tool_payload = json.loads(llm.last_tool_payload)
     assert tool_payload["status"] == "OK"
-    assert tool_payload["paper_count"] == 1
-    assert len(tool_payload["papers"]) == 1
+    assert tool_payload["data"]["paper_count"] == 1
+    assert len(tool_payload["data"]["papers"]) == 1
 
     paper_files = list(memory.papers_dir.glob("*.md"))
     assert len(paper_files) == 1
@@ -75,26 +74,38 @@ def test_generator_searcher_bridge_integration(tmp_path: Path) -> None:
 
 def test_verifier_citation_reviewer_stage_integration(tmp_path: Path) -> None:
     memory = ProblemMemory(problem_id="p-vcite", runs_root=tmp_path / "runs")
-    memory.add_paper("content", filename="demo.md")
+    memory.add_paper("claim", filename="demo.md")
     set_current_problem_memory(memory)
 
-    def _runner(llm, prompts, problem_text, proof_text, tools, tool_executor):
-        return (
-            "<verdict>CORRECT</verdict>\n"
-            "<verification>ok</verification>\n"
-            "<verified_lemmas>NONE</verified_lemmas>",
-            VerificationDecision.CORRECT,
-            "",
-            [],
-            "phase1",
-        )
+    class _FakeVerifierLLM:
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            if stream_prefix == "VERIFIER-P1":
+                return _Resp("phase1")
+            return _Resp(
+                "<verdict>CORRECT</verdict>\n"
+                "<verification>ok</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>"
+            )
+
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+            return _Resp("phase2")
+
+        @staticmethod
+        def clear_reasoning_content(messages):
+            return
 
     verifier = VerifierAgent(
-        llm_client=object(),
-        prompts={},
+        llm_client=_FakeVerifierLLM(),
+        prompts={
+            "verifier": {
+                "system": "sys",
+                "phase1_user": "p1",
+                "phase2_user": "p2",
+                "phase3_user": "p3",
+            }
+        },
         tools=[],
         tool_executor=lambda function_name, arguments: "",
-        verifier_runner=_runner,
     )
 
     proof_text = "<solution>claim [cite:artifact/papers/demo.md]</solution>"
@@ -103,5 +114,17 @@ def test_verifier_citation_reviewer_stage_integration(tmp_path: Path) -> None:
     review_payload = json.loads(extract_xml_tag(full_text, "citation_review"))
     assert review_payload["fail_count"] == 0
     assert review_payload["items"][0]["passed"] is True
+
+    set_current_problem_memory(None)
+
+
+def test_call_searcher_requires_configured_sources(tmp_path: Path) -> None:
+    memory = ProblemMemory(problem_id="p-no-source", runs_root=tmp_path / "runs")
+    set_current_problem_memory(memory)
+    configure_searcher_sources({})
+
+    payload = json.loads(execute_tool("call_searcher", {"query": "demo"}))
+    assert payload["status"] == "ERROR"
+    assert payload["error"]["error_code"] == "NO_SEARCH_SOURCES_CONFIGURED"
 
     set_current_problem_memory(None)

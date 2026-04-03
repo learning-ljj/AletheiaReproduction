@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
-
-def _error(code: str, message: str, **detail) -> str:
-    payload = {"error": code, "message": message}
-    if detail:
-        payload["detail"] = detail
-    return json.dumps(payload, ensure_ascii=False)
+from src.tools.envelope import format_tool_error, format_tool_success
 
 
 def _is_allowed_artifact_path(path: Path) -> bool:
@@ -47,24 +41,53 @@ def read_artifact_layer(path: str, layer: int) -> str:
     layer=2: extracted theorem/proof body
     layer=3: source metadata/provenance section
     """
+    # 统一策略：本函数不再返回“裸文本/旧错误字典”，
+    # 而是始终返回统一工具包络（OK/ERROR）。
+    # 这样 registry 不需要再做兼容转换。
     if layer not in (1, 2, 3):
-        return _error("INVALID_LAYER", "layer must be one of {1,2,3}", layer=layer)
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="INVALID_LAYER",
+            message="layer must be one of {1,2,3}",
+            retryable=False,
+            detail={"layer": layer},
+        )
 
     try:
         target = Path(path).resolve(strict=True)
     except FileNotFoundError:
-        return _error("PATH_NOT_FOUND", "artifact path does not exist", path=path)
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="PATH_NOT_FOUND",
+            message="artifact path does not exist",
+            retryable=False,
+            detail={"path": path},
+        )
     except OSError as exc:
-        return _error("PATH_INVALID", f"invalid artifact path: {exc}", path=path)
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="PATH_INVALID",
+            message=f"invalid artifact path: {exc}",
+            retryable=False,
+            detail={"path": path},
+        )
 
     if not target.is_file():
-        return _error("PATH_NOT_FILE", "artifact path must point to a file", path=str(target))
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="PATH_NOT_FILE",
+            message="artifact path must point to a file",
+            retryable=False,
+            detail={"path": str(target)},
+        )
 
     if not _is_allowed_artifact_path(target):
-        return _error(
-            "PATH_NOT_ALLOWED",
-            "path must stay inside runs/{problem_id}/artifact",
-            path=str(target),
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="PATH_NOT_ALLOWED",
+            message="path must stay inside runs/{problem_id}/artifact",
+            retryable=False,
+            detail={"path": str(target)},
         )
 
     text = target.read_text(encoding="utf-8")
@@ -74,5 +97,19 @@ def read_artifact_layer(path: str, layer: int) -> str:
         out = _extract_layer_block(text, layer=layer)
 
     if not out:
-        return _error("LAYER_NOT_FOUND", "requested layer content is missing", layer=layer, path=str(target))
-    return out
+        return format_tool_error(
+            tool="read_artifact_layer",
+            error_code="LAYER_NOT_FOUND",
+            message="requested layer content is missing",
+            retryable=False,
+            detail={"layer": layer, "path": str(target)},
+        )
+
+    return format_tool_success(
+        tool="read_artifact_layer",
+        data={
+            "path": str(target),
+            "layer": layer,
+            "content": out,
+        },
+    )

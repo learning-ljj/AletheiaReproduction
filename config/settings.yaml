@@ -33,3 +33,46 @@ tools:
 agent:
   max_turns: 3
   worklog_llm_timeout_seconds: 120
+
+orchestrator:
+  mode: hybrid_loop
+  enable_stage_state: true
+  event_log: true
+
+resilience:
+  llm_retry_max_attempts: 3
+  tool_retry_max_attempts: 2
+  tool_retry_backoff_seconds: 0.2
+  default_max_tool_rounds: 5
+  generator_max_tool_rounds: 5
+  reviser_max_tool_rounds: 5
+  verifier_max_tool_rounds: 5
+  tool_timeout_seconds: 30
+
+retrieval:
+  depth: full
+  enable_query_expansion: true
+  sources: [openalex, arxiv]
+  max_results_per_query: 10
+  retry_attempts: 2
+  retry_backoff_seconds: 0.2
+  dedup:
+    keys: [doi, arxiv_id, normalized_title]
+
+verifier:
+  citation_review:
+    enabled: true
+    trigger_when_citation_present: true
+    subagent: citation_reviewer
+    mode: soft
+    checks:
+      - path_exists
+      - claim_source_match
+      - metadata_consistency
+      - doi_openalex_arxiv_title_cascade
+    warn_only: true
+    hard_fail_threshold: 0.4
+
+repro:
+  snapshot_prompts: true
+  snapshot_settings: true
