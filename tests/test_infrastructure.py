@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from src.utils.logging.logger import append_raw_event
 from src.utils.logging.raw_log_reader import load_raw_events, resolve_run_log_path
@@ -8,7 +8,7 @@ from src.utils.logging.worklog_builder import WorklogBuilder
 def test_log_path_logger_writes_to_runs(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     payload = {
-        "agent_node": "GENERATOR",
+        "node": "GENERATOR",
         "turn_id": 0,
         "timestamp": "2026-04-01T00:00:00Z",
         "content": "demo",
@@ -27,7 +27,7 @@ def test_log_path_reader_uses_runs_layout(tmp_path: Path) -> None:
     append_raw_event(
         problem_id="p-read",
         payload={
-            "agent_node": "VERIFIER",
+            "node": "VERIFIER",
             "turn_id": 1,
             "timestamp": "2026-04-01T00:00:01Z",
             "decision": "MINOR_FLAW",
@@ -37,7 +37,7 @@ def test_log_path_reader_uses_runs_layout(tmp_path: Path) -> None:
 
     events = load_raw_events(problem_id="p-read", runs_root=runs_root)
     assert len(events) == 1
-    assert events[0]["agent_node"] == "VERIFIER"
+    assert events[0]["node"] == "VERIFIER"
 
 
 
@@ -48,8 +48,8 @@ def test_log_path_worklog_builder_consumes_runs_stream(tmp_path: Path) -> None:
     append_raw_event(
         problem_id=problem_id,
         payload={
-            "agent_node": "RUN_START",
-            "turn_id": -1,
+            "node": "RUN_START",
+            "turn_id": 0,
             "timestamp": "2026-04-01T00:00:00Z",
             "problem_text": "demo",
             "ground_truth": "42",
@@ -59,7 +59,7 @@ def test_log_path_worklog_builder_consumes_runs_stream(tmp_path: Path) -> None:
     append_raw_event(
         problem_id=problem_id,
         payload={
-            "agent_node": "FINAL",
+            "node": "FINAL",
             "turn_id": 1,
             "timestamp": "2026-04-01T00:00:02Z",
             "final_output": "final demo",
@@ -77,3 +77,4 @@ def test_log_path_worklog_builder_consumes_runs_stream(tmp_path: Path) -> None:
     text = output_md.read_text(encoding="utf-8")
     assert problem_id in text
     assert "final demo" in text
+

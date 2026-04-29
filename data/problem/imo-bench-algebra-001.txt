@@ -1,0 +1,1 @@
+For a given positive integer $N$, Henry writes the quotient of $ab$ divided by $N+1$ on the board for each integer pair $(a,b)$ where $1\le a,b\le N$. Find all $N$ such that the sum of the $N^2$ numbers Henry wrote on the board is $\frac{N^3-N^2+2}{4}$.

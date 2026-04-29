@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 from src.memory.problem_memory import ProblemMemory
 from src.memory.state import ProblemSnapshot, StageSnapshot, StateValidationError
@@ -120,7 +120,7 @@ def test_problem_memory_state_save_load_merge(tmp_path: Path) -> None:
 def test_problem_memory_event_roundtrip(tmp_path: Path) -> None:
     memory = ProblemMemory(problem_id="p-003", runs_root=tmp_path / "runs")
     event = {
-        "agent_node": "GENERATOR",
+        "node": "GENERATOR",
         "turn_id": 1,
         "timestamp": "2026-04-01T00:00:00Z",
         "content": "demo",
@@ -129,7 +129,7 @@ def test_problem_memory_event_roundtrip(tmp_path: Path) -> None:
     events = memory.read_events()
 
     assert len(events) == 1
-    assert events[0]["agent_node"] == "GENERATOR"
+    assert events[0]["node"] == "GENERATOR"
     assert events[0]["content"] == "demo"
 
 
@@ -153,3 +153,4 @@ def test_problem_memory_artifact_and_bibtex(tmp_path: Path) -> None:
     bib_path = memory.save_bibtex("@article{demo, title={Demo}}")
     assert bib_path.name == "citations.bib"
     assert bib_path.read_text(encoding="utf-8").strip() == "@article{demo, title={Demo}}"
+

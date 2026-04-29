@@ -26,7 +26,7 @@ class EventCollector:
 
     def collect(self, *, problem_id: str, events: list[dict]) -> dict:
         # 先把事件时间戳转成 datetime，用于计算总耗时。
-        # 大白话：日志里每条事件都带 timestamp，这里取最早和最晚的差值当“整次运行耗时”。
+        # 大白话：日志里每条事件都带 timestamp，这里取最早和最晚的差值当“整次运 行耗时”。
         timestamps = [self._parse_ts(event.get("timestamp")) for event in events]
         timestamps = [item for item in timestamps if item is not None]
         elapsed = 0.0
@@ -39,7 +39,7 @@ class EventCollector:
         turn_ids = [
             int(event.get("turn_id", 0))
             for event in events
-            if str(event.get("agent_node")) in tracked_nodes
+            if str(event.get("node")) in tracked_nodes
         ]
         iteration_count = max(turn_ids) if turn_ids else 0
 
@@ -50,13 +50,13 @@ class EventCollector:
         ground_truth = first_event.get("ground_truth") or ""
 
         # 最终输出取最后一个 FINAL 事件，保证拿到最终版本而不是中间草稿。
-        final_event = next((event for event in reversed(events) if event.get("agent_node") == "FINAL"), {})
+        final_event = next((event for event in reversed(events) if event.get("node") == "FINAL"), {})
         final_output = final_event.get("final_output") or final_event.get("content") or ""
 
         # 按 turn_id 分桶，后续渲染时按轮次回放“谁在第几轮说了什么”。
         turns: dict[int, list[dict]] = {}
         for event in events:
-            node = str(event.get("agent_node", ""))
+            node = str(event.get("node", ""))
             if node not in tracked_nodes:
                 continue
             turn_id = int(event.get("turn_id", 0))
@@ -124,7 +124,7 @@ class SummaryLLMService:
         else:
             self._active_llm_client = self.llm_client
 
-        # 没有可用 LLM 时直接进入“可解释失败”模式，后续 request_json 会返回错误码。
+        # 没有可用 LLM 时直接进入“可解释失败”模式，后续 request_json 会返回错误 码。
         if self._active_llm_client is None:
             return
 
@@ -266,7 +266,7 @@ class RoleSummarizer:
         # 兜底策略：LLM 摘要失败时，仍返回结构化占位结果。
         # 大白话：宁可“有保底信息”，也不能让渲染器因为 None 崩掉。
         return {
-            "step_summary": [f"{role} 思维链已记录（{len(cot)} 字符）。", "LLM 离线摘要失败，建议人工复核。"],
+            "step_summary": [f"{role} 思维链已记录（{len(cot)} 字符）。", "LLM  离线摘要失败，建议人工复核。"],
             "quality_evaluation": ["回退模式：未能完成细粒度质量评估。"],
             "llm_fallback": True,
             "llm_error": err or "llm_invalid_payload",
@@ -396,7 +396,7 @@ class MarkdownRenderer:
         for turn_id in sorted(turns.keys()):
             turn_events = turns[turn_id]
             for event in turn_events:
-                node = str(event.get("agent_node", ""))
+                node = str(event.get("node", ""))
                 lines.append(f"#### Turn {turn_id} · {node}")
 
                 if node in ("GENERATOR", "REVISER"):
@@ -431,7 +431,7 @@ class MarkdownRenderer:
                     lines.append("```")
 
                 elif node == "VERIFIER":
-                    # Verifier 按 Phase1/2/3 展开，保持和提示词协议一致，方便逐段审计。
+                    # Verifier 按 Phase1/2/3 展开，保持和提示词协议一致，方便逐 段审计。
                     phase1 = str(event.get("phase1_analysis", "") or "")
                     phase3 = str(event.get("full_verification_text", "") or "")
                     verification_report = str(event.get("verification_report", "") or "")

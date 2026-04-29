@@ -47,7 +47,7 @@ def test_verifier_triggers_citation_review_on_demand(tmp_path: Path) -> None:
                 "<verified_lemmas>NONE</verified_lemmas>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod
@@ -90,7 +90,7 @@ def test_verifier_ignores_citations_outside_solution_block() -> None:
                 "<verified_lemmas>NONE</verified_lemmas>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod
@@ -141,7 +141,7 @@ class _FakeLLMVerifierWithCitationTool:
             "<citation_review>NONE</citation_review>"
         )
 
-    def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+    def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
         self.last_tool_payload = tool_executor(
             "call_citation_reviewer",
             {

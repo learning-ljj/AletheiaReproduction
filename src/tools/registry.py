@@ -1,6 +1,5 @@
 """工具注册表：OpenAI Function Calling schema 与统一执行分发。"""
 
-import time
 from typing import Callable
 
 from src.agents.citation_reviewer import CitationReviewerAgent
@@ -9,24 +8,19 @@ from src.memory.problem_memory import get_current_problem_memory
 from src.tools.artifact_reader import read_artifact_layer
 from src.tools.code_executor import run_python
 from src.tools.envelope import (
-    extract_tool_error,
     format_tool_error,
     format_tool_success,
-    parse_tool_payload,
 )
 from src.tools.schemas import get_tool_schemas as _schema_get_tool_schemas
 
 
 _SEARCH_SOURCE_HANDLERS: dict[str, Callable[[str, int], list[dict]]] = {}
-_TOOL_RETRY_MAX_ATTEMPTS: int = 1
-_TOOL_RETRY_BACKOFF_SECONDS: float = 0.0
 
 
 def configure_tool_resilience(*, max_attempts: int = 1, backoff_seconds: float = 0.0) -> None:
-    """Configure retry policy for execute_tool middleware."""
-    global _TOOL_RETRY_MAX_ATTEMPTS, _TOOL_RETRY_BACKOFF_SECONDS
-    _TOOL_RETRY_MAX_ATTEMPTS = max(1, int(max_attempts))
-    _TOOL_RETRY_BACKOFF_SECONDS = max(0.0, float(backoff_seconds))
+    """Compatibility hook for settings; MVP middleware keeps single-attempt execution."""
+    _ = max_attempts
+    _ = backoff_seconds
 
 
 def _is_retryable_exception(exc: BaseException) -> bool:
@@ -84,8 +78,7 @@ def _format_call_searcher(
     )
 
     # 重点说明：agent.run 不仅会返回 papers，也会返回 errors/recovered_errors。
-    # 这些错误字段会原样回传给 LLM，帮助模型决定下一步动作，
-    # 而不是像传统流程那样“空结果即静默降级”。
+    # 这些错误字段会原样回传给 LLM，帮助模型决定下一步动作，而不是像传统流程那样“空结果即静默降级”。
     result = agent.run(query=query, query_bundle=query_bundle)
     has_errors = bool(result.get("has_errors"))
 
@@ -186,45 +179,18 @@ def execute_tool(function_name: str, arguments: dict) -> str:
         )
 
     normalized_arguments = arguments if isinstance(arguments, dict) else {}
-    attempts = max(1, _TOOL_RETRY_MAX_ATTEMPTS)
-    for attempt in range(1, attempts + 1):
-        try:
-            result = _TOOL_MAP[function_name](**normalized_arguments)
-            parsed = parse_tool_payload(result)
-            error_payload = extract_tool_error(parsed)
+    try:
+        return _TOOL_MAP[function_name](**normalized_arguments)
+    except BaseException as exc:
+        # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。目标是把“中断类错误”也转换为结构化信息交给 LLM，而不是让整个主链路直接崩掉。
+        if isinstance(exc, (SystemExit, GeneratorExit)):
+            raise
 
-            if error_payload and bool(error_payload.get("retryable")) and attempt < attempts:
-                if _TOOL_RETRY_BACKOFF_SECONDS > 0:
-                    time.sleep(_TOOL_RETRY_BACKOFF_SECONDS)
-                continue
-            return result
-        except BaseException as exc:
-            # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。
-            # 目标是把“中断类错误”也转换为结构化信息交给 LLM，
-            # 而不是让整个主链路直接崩掉。
-            if isinstance(exc, (SystemExit, GeneratorExit)):
-                raise
-
-            retryable = _is_retryable_exception(exc)
-            if isinstance(exc, KeyboardInterrupt):
-                retryable = True
-
-            if retryable and attempt < attempts:
-                if _TOOL_RETRY_BACKOFF_SECONDS > 0:
-                    time.sleep(_TOOL_RETRY_BACKOFF_SECONDS)
-                continue
-
-            return format_tool_error(
-                tool=function_name,
-                error_code="TOOL_RUNTIME_EXCEPTION",
-                message=f"{function_name} raised {type(exc).__name__}: {exc}",
-                retryable=retryable,
-                detail={"attempt": attempt, "max_attempts": attempts},
-            )
-
-    return format_tool_error(
-        tool=function_name,
-        error_code="UNEXPECTED_TOOL_MIDDLEWARE_STATE",
-        message="Tool middleware reached an unexpected terminal state.",
-        retryable=False,
-    )
+        retryable = _is_retryable_exception(exc) or isinstance(exc, KeyboardInterrupt)
+        return format_tool_error(
+            tool=function_name,
+            error_code="TOOL_RUNTIME_EXCEPTION",
+            message=f"{function_name} raised {type(exc).__name__}: {exc}",
+            retryable=retryable,
+            detail={"attempt": 1, "max_attempts": 1},
+        )

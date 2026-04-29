@@ -5,25 +5,22 @@ from typing import Callable
 from src.agents.generator import GeneratorAgent
 from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
-from src.core.finalizer import build_final_output, call_final
 from src.core.orchestrator import Orchestrator
-from src.core.state import ProofState
+from src.memory.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
 from src.tools.registry import (
     configure_searcher_sources,
-    configure_tool_resilience,
     execute_tool,
     format_tool_error,
     get_tool_schemas,
 )
 from src.tools.search_sources import build_default_source_handlers
-from src.utils.logging.logger import append_raw_event, save_final_output_markdown
 
 
 _AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "generator": {"run_python", "call_searcher"},
-    "reviser": {"run_python", "call_searcher", "read_artifact_layer"},
+    "generator": {"read_artifact_layer", "call_searcher"},
+    "reviser": {"read_artifact_layer", "call_searcher"},
     "verifier": {"run_python", "read_artifact_layer", "call_citation_reviewer"},
 }
 
@@ -62,7 +59,7 @@ def _build_scoped_tool_executor(
     return _executor
 
 
-class _AgentRuntime:
+class AgentPipeline:
     """主链 Agent 运行时：直接装配 Generator/Verifier/Reviser 对象。"""
 
     def __init__(
@@ -72,9 +69,7 @@ class _AgentRuntime:
         tool_schemas,
         tool_executor,
         *,
-        generator_max_tool_rounds: int = 5,
-        reviser_max_tool_rounds: int = 5,
-        verifier_max_tool_rounds: int = 5,
+        max_tool_rounds: int = 20,
     ):
         self.llm_client = llm_client
         self.prompts = prompts
@@ -96,104 +91,62 @@ class _AgentRuntime:
             system_prompt=self.prompts["generator"]["system"],
             tools=generator_tools,
             tool_executor=generator_executor,
-            max_tool_rounds=generator_max_tool_rounds,
+            max_tool_rounds=max_tool_rounds,
         )
         self.verifier_agent = VerifierAgent(
             llm_client=self.llm_client,
             prompts=self.prompts,
             tools=verifier_tools,
             tool_executor=verifier_executor,
-            max_tool_rounds=verifier_max_tool_rounds,
+            max_tool_rounds=max_tool_rounds,
         )
         self.reviser_agent = ReviserAgent(
             llm_client=self.llm_client,
             system_prompt=self.prompts["reviser"]["system"],
             tools=reviser_tools,
             tool_executor=reviser_executor,
-            max_tool_rounds=reviser_max_tool_rounds,
+            max_tool_rounds=max_tool_rounds,
         )
 
     def call_generator(
         self,
         problem_text: str,
         lesson: str | None = None,
-        layer1_summaries: list[str] | None = None,
+        lemma_context_items: list[str] | None = None,
     ):
-        # C31: 主路径改为 GeneratorAgent 对象执行。
+        # GeneratorAgent 对象执行。
         return self.generator_agent.run(
             problem_text=problem_text,
             error_lessons=lesson,
-            layer1_summaries=layer1_summaries,
+            lemma_context_items=lemma_context_items,
         )
 
     def call_verifier(self, problem_text: str, proof_text: str):
-        # C32: 主路径改为 VerifierAgent 对象执行。
+        # VerifierAgent 对象执行。
         return self.verifier_agent.run(
             problem_text=problem_text,
             proof_text=proof_text,
         )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
+        # ReviserAgent 对象执行。
         return self.reviser_agent.run(
             problem_text=problem_text,
             previous_solution=previous_solution,
             verification_report=verification_report,
-        )
-
-    def call_final(
-        self,
-        problem_text: str,
-        current_solution: str,
-        last_verifier_decision: str,
-        last_verification_report: str,
-    ):
-        return call_final(
-            self.llm_client,
-            self.prompts,
-            problem_text,
-            current_solution,
-            last_verifier_decision,
-            last_verification_report,
+            lemma_context_items=lemma_context_items,
         )
 
 
-class _LoggerAdapter:
-    """为 Orchestrator 提供最小日志写接口。"""
-
-    @staticmethod
-    def append_raw_event(problem_id: str, payload: dict) -> None:
-        append_raw_event(problem_id=problem_id, payload=payload)
-
-    @staticmethod
-    def save_final_output_markdown(problem_id: str, final_output: str) -> None:
-        save_final_output_markdown(problem_id=problem_id, final_output=final_output)
-
-
-class _FinalizerAdapter:
-    """把函数式 finalizer 封装成对象，统一 Orchestrator 依赖接口。"""
-
-    @staticmethod
-    def build_final_output(
-        success: bool,
-        solution_text: str | None,
-        failure_reason: str | None,
-        *,
-        partial: bool = False,
-        assessment_output: str | None = None,
-        preserve_xml: bool = False,
-        references: list[str] | None = None,
-        warning_summary: str | None = None,
-    ) -> str:
-        return build_final_output(
-            success=success,
-            solution_text=solution_text,
-            failure_reason=failure_reason,
-            partial=partial,
-            assessment_output=assessment_output,
-            preserve_xml=preserve_xml,
-            references=references,
-            warning_summary=warning_summary,
-        )
+def _resolve_tool_round_limits(config: dict) -> int:
+    resilience_cfg = config.get("resilience", {}) if isinstance(config, dict) else {}
+    return int(resilience_cfg.get("max_tool_rounds", 20))
 
 
 class AletheiaAgent:
@@ -204,38 +157,25 @@ class AletheiaAgent:
         # 仅当调用方显式传入 None 时，才禁用流式输出。
         self.llm_client = create_llm_client(config, stream_file=stream_file)
         self.prompts = prompts
-        self.max_turns: int = config.get("agent", {}).get("max_turns", 5)
-        self.runs_root: str = config.get("agent", {}).get("runs_root", "runs")
-        self.tool_schemas = get_tool_schemas()
-        self.tool_executor = execute_tool
 
-        resilience_cfg = config.get("resilience", {}) if isinstance(config, dict) else {}
-        default_rounds = int(resilience_cfg.get("default_max_tool_rounds", 5))
-        generator_rounds = int(resilience_cfg.get("generator_max_tool_rounds", default_rounds))
-        reviser_rounds = int(resilience_cfg.get("reviser_max_tool_rounds", default_rounds))
-        verifier_rounds = int(resilience_cfg.get("verifier_max_tool_rounds", default_rounds))
+        agent_cfg = config.get("agent", {}) if isinstance(config, dict) else {}
+        self.max_turns = int(agent_cfg.get("max_turns", 5))
+        self.runs_root = str(agent_cfg.get("runs_root", "runs"))
 
-        configure_tool_resilience(
-            max_attempts=int(resilience_cfg.get("tool_retry_max_attempts", 1)),
-            backoff_seconds=float(resilience_cfg.get("tool_retry_backoff_seconds", 0.2)),
-        )
         configure_searcher_sources(build_default_source_handlers(config))
+        tool_schemas = get_tool_schemas()
+        rounds = _resolve_tool_round_limits(config)
 
-        # 在构造阶段完成依赖装配：solve 只负责创建状态并委托运行。
-        agent_runtime = _AgentRuntime(
+        pipeline = AgentPipeline(
             self.llm_client,
-            self.prompts,
-            self.tool_schemas,
-            self.tool_executor,
-            generator_max_tool_rounds=generator_rounds,
-            reviser_max_tool_rounds=reviser_rounds,
-            verifier_max_tool_rounds=verifier_rounds,
+            prompts,
+            tool_schemas,
+            execute_tool,
+            max_tool_rounds=rounds,
         )
         self.orchestrator = Orchestrator(
             max_turns=self.max_turns,
-            pipeline=agent_runtime,
-            logger=_LoggerAdapter(),
-            finalizer=_FinalizerAdapter(),
+            pipeline=pipeline,
             runs_root=self.runs_root,
         )
 

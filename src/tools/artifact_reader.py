@@ -9,12 +9,16 @@ from src.tools.envelope import format_tool_error, format_tool_success
 
 
 def _is_allowed_artifact_path(path: Path) -> bool:
-    # Allow only paths under runs/{problem_id}/artifact/**
+    # 仅允许读取 runs/{problem_id}/artifact/**，防止越权读任意磁盘文件。
     normalized = path.as_posix().lower()
     return re.search(r"(^|/)runs/[^/]+/artifact/.+", normalized) is not None
 
 
 def _extract_layer1(text: str) -> str:
+    # Layer1 约定为文档最前面的 YAML frontmatter：
+    # ---
+    # key: value
+    # ---
     stripped = text.lstrip()
     if not stripped.startswith("---"):
         return ""
@@ -26,6 +30,7 @@ def _extract_layer1(text: str) -> str:
 
 
 def _extract_layer_block(text: str, layer: int) -> str:
+    # Layer2/Layer3 使用 markdown 二级标题切块提取。
     if layer == 2:
         pattern = re.compile(r"(?ms)^##\s*Layer2[^\n]*\n(.*?)(?=^##\s*Layer3|\Z)")
     else:
@@ -41,9 +46,8 @@ def read_artifact_layer(path: str, layer: int) -> str:
     layer=2: extracted theorem/proof body
     layer=3: source metadata/provenance section
     """
-    # 统一策略：本函数不再返回“裸文本/旧错误字典”，
-    # 而是始终返回统一工具包络（OK/ERROR）。
-    # 这样 registry 不需要再做兼容转换。
+    # 统一策略：始终返回 envelope JSON 字符串（OK/ERROR），
+    # 避免上层再维护“裸文本 / 字典 / 异常”三套分支。
     if layer not in (1, 2, 3):
         return format_tool_error(
             tool="read_artifact_layer",

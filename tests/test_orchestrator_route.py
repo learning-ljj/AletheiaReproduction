@@ -1,8 +1,10 @@
-import json
+﻿import json
 from pathlib import Path
 
+import pytest
+
 from src.core.orchestrator import Orchestrator
-from src.core.state import ProofState, RunStatus, VerificationDecision
+from src.memory.state import ProofState, VerificationDecision
 
 
 class _Resp:
@@ -13,7 +15,7 @@ class _Resp:
 
 class _NoopLogger:
     def append_raw_event(self, problem_id: str, payload: dict) -> None:
-        # A13 之后，raw event 由 ProblemMemory 负责，这里保持兼容占位。
+        # A13 涔嬪悗锛宺aw event 鐢?ProblemMemory 璐熻矗锛岃繖閲屼繚鎸佸吋瀹瑰崰浣嶃€?
         return
 
     def save_final_output_markdown(self, problem_id: str, final_output: str) -> None:
@@ -41,7 +43,12 @@ class _SimpleFinalizer:
 
 
 class _SuccessPipeline:
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content="<solution>ok</solution>", reasoning_content="gen")
 
     def call_verifier(self, problem_text: str, proof_text: str):
@@ -53,7 +60,13 @@ class _SuccessPipeline:
             "phase1",
         )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content=previous_solution, reasoning_content="rev")
 
     def call_final(
@@ -63,23 +76,36 @@ class _SuccessPipeline:
         last_verifier_decision: str,
         last_verification_report: str,
     ):
-        return RunStatus.PARTIAL.value, "", current_solution, ""
+        return "PROGRESS", "", current_solution, ""
 
 
 class _PartialPipeline:
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content="<solution>draft</solution>", reasoning_content="gen")
 
     def call_verifier(self, problem_text: str, proof_text: str):
         return (
-            "<verdict>MINOR_FLAW</verdict>",
+            "<verdict>MINOR_FLAW</verdict>\n"
+            "<verified_lemmas>Lemma: symmetry of equality.</verified_lemmas>\n"
+            "<citation_review>NONE</citation_review>",
             VerificationDecision.MINOR_FLAW,
             "gap",
             [],
             "phase1",
         )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content=previous_solution, reasoning_content="rev")
 
     def call_final(
@@ -91,27 +117,40 @@ class _PartialPipeline:
     ):
         final_solution = "<done>done-part</done>\n<undone>todo-part</undone>"
         final_xml = (
-            "<status>PARTIAL_PROGRESS</status>\n"
+            "<status>PROGRESS</status>\n"
             "<verdict>progress made</verdict>\n"
             f"<solution>{final_solution}</solution>"
         )
-        return RunStatus.PARTIAL.value, "progress made", final_solution, final_xml
+        return "PROGRESS", "progress made", final_solution, final_xml
 
 
 class _PartialUndoneNonePipeline:
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content="<solution>draft</solution>", reasoning_content="gen")
 
     def call_verifier(self, problem_text: str, proof_text: str):
         return (
-            "<verdict>MINOR_FLAW</verdict>",
+            "<verdict>MINOR_FLAW</verdict>\n"
+            "<verified_lemmas>Lemma: transitivity of equality.</verified_lemmas>\n"
+            "<citation_review>NONE</citation_review>",
             VerificationDecision.MINOR_FLAW,
             "gap",
             [],
             "phase1",
         )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content=previous_solution, reasoning_content="rev")
 
     def call_final(
@@ -123,21 +162,32 @@ class _PartialUndoneNonePipeline:
     ):
         final_solution = "<done>done-part</done>\n<undone>无</undone>"
         final_xml = (
-            "<status>PARTIAL_PROGRESS</status>\n"
+            "<status>PROGRESS</status>\n"
             "<verdict>progress made</verdict>\n"
             f"<solution>{final_solution}</solution>"
         )
-        return RunStatus.PARTIAL.value, "progress made", final_solution, final_xml
+        return "PROGRESS", "progress made", final_solution, final_xml
 
 
 class _FailPipeline:
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         raise TimeoutError("generator timeout")
 
     def call_verifier(self, problem_text: str, proof_text: str):
         raise AssertionError("verifier should not run on initial failure")
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         raise AssertionError("reviser should not run on initial failure")
 
     def call_final(
@@ -156,14 +206,28 @@ class _ParseRecoverPipeline:
         self.verifier_calls = 0
         self.reviser_calls = 0
 
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         self.generator_calls += 1
         return _Resp(content=f"<solution>candidate-{self.generator_calls}</solution>", reasoning_content="gen")
 
     def call_verifier(self, problem_text: str, proof_text: str):
         self.verifier_calls += 1
         if self.verifier_calls == 1:
-            raise ValueError("Invalid <verdict> value: 'MAYBE'")
+            return (
+                "<verdict>MINOR_FLAW</verdict>\n"
+                "<verification>Verifier output parsing failed previously; repair XML format and keep valid math.</verification>\n"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>",
+                VerificationDecision.MINOR_FLAW,
+                "Verifier output parsing failed previously; repair XML format and keep valid math.",
+                [],
+                "phase1",
+            )
         return (
             "<verdict>CORRECT</verdict>",
             VerificationDecision.CORRECT,
@@ -172,7 +236,13 @@ class _ParseRecoverPipeline:
             "phase1",
         )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         self.reviser_calls += 1
         return _Resp(content=previous_solution, reasoning_content="rev")
 
@@ -183,17 +253,37 @@ class _ParseRecoverPipeline:
         last_verifier_decision: str,
         last_verification_report: str,
     ):
-        return RunStatus.PARTIAL.value, "", current_solution, ""
+        return "PROGRESS", "", current_solution, ""
 
 
 class _ParseFailPipeline:
-    def call_generator(self, problem_text: str, lesson: str | None = None):
+    def call_generator(
+        self,
+        problem_text: str,
+        lesson: str | None = None,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content="<solution>candidate</solution>", reasoning_content="gen")
 
     def call_verifier(self, problem_text: str, proof_text: str):
-        raise ValueError("Missing <solution> tag")
+        return (
+            "<verdict>MINOR_FLAW</verdict>\n"
+            "<verification>Output is missing <solution> tag and must be fixed by Reviser.</verification>\n"
+            "<verified_lemmas>NONE</verified_lemmas>\n"
+            "<citation_review>NONE</citation_review>",
+            VerificationDecision.MINOR_FLAW,
+            "Output is missing <solution> tag and must be fixed by Reviser.",
+            [],
+            "phase1",
+        )
 
-    def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+    def call_reviser(
+        self,
+        problem_text: str,
+        previous_solution: str,
+        verification_report: str,
+        lemma_context_items: list[str] | None = None,
+    ):
         return _Resp(content=previous_solution, reasoning_content="rev")
 
     def call_final(
@@ -203,7 +293,7 @@ class _ParseFailPipeline:
         last_verifier_decision: str,
         last_verification_report: str,
     ):
-        return RunStatus.PARTIAL.value, "", current_solution, ""
+        return "PROGRESS", "", current_solution, ""
 
 
 def _read_state(runs_root: Path, problem_id: str) -> dict:
@@ -235,14 +325,14 @@ def test_persist_success_state_and_history(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
     persisted = _read_state(runs_root, "p-success")
-    assert persisted["status"] == RunStatus.SUCCESS.value
+    assert persisted["status"] == "SUCCESS"
     history = _read_history_lines(runs_root, "p-success")
     assert len(history) >= 4
 
 
-def test_persist_partial_state_and_history(tmp_path: Path) -> None:
+def test_persist_progress_state_and_history(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
         max_turns=1,
@@ -255,14 +345,14 @@ def test_persist_partial_state_and_history(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.PARTIAL
+    assert out.status == "PROGRESS"
     persisted = _read_state(runs_root, "p-partial")
-    assert persisted["status"] == RunStatus.PARTIAL.value
+    assert persisted["status"] == "PROGRESS"
     history = _read_history_lines(runs_root, "p-partial")
     assert len(history) >= 4
 
 
-def test_partial_output_rewrites_trivial_undone_block(tmp_path: Path) -> None:
+def test_progress_sets_final_answer_when_new_verified_lemma_exists(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
         max_turns=1,
@@ -275,10 +365,9 @@ def test_partial_output_rewrites_trivial_undone_block(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.PARTIAL
+    assert out.status == "PROGRESS"
+    assert out.failure_reason == "max_turns_exhausted"
     assert out.final_answer is not None
-    assert "<undone>无</undone>" not in out.final_answer
-    assert "尚未形成可通过 verifier 的完整证明" in out.final_answer
 
 
 def test_persist_failure_state_and_history(tmp_path: Path) -> None:
@@ -292,16 +381,16 @@ def test_persist_failure_state_and_history(tmp_path: Path) -> None:
     )
     state = ProofState(problem_id="p-fail", problem_text="demo")
 
-    out = orchestrator.run(state)
+    with pytest.raises(RuntimeError, match="GENERATOR@turn0"):
+        orchestrator.run(state)
 
-    assert out.status == RunStatus.FAILED
     persisted = _read_state(runs_root, "p-fail")
-    assert persisted["status"] == RunStatus.FAILED.value
+    assert persisted["status"] == "RUNNING"
     history = _read_history_lines(runs_root, "p-fail")
-    assert len(history) >= 2
+    assert len(history) >= 1
 
 
-def test_parse_error_invalid_verdict_recover_route(tmp_path: Path) -> None:
+def test_verifier_minor_flaw_recover_route(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     pipeline = _ParseRecoverPipeline()
     orchestrator = Orchestrator(
@@ -315,16 +404,18 @@ def test_parse_error_invalid_verdict_recover_route(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
     assert pipeline.generator_calls >= 1
     assert pipeline.reviser_calls >= 1
     events = _read_history_events(runs_root, "p-parse-recover")
-    parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
-    assert parse_events
-    assert parse_events[0].get("parse_error_code") == "invalid_verdict"
+    parse_events = [e for e in events if e.get("node") == "PARSE_ERROR"]
+    assert not parse_events
+    verifier_events = [e for e in events if e.get("node") == "VERIFIER"]
+    assert verifier_events
+    assert verifier_events[0].get("decision") == VerificationDecision.MINOR_FLAW.value
 
 
-def test_parse_error_missing_solution_fail_route(tmp_path: Path) -> None:
+def test_verifier_minor_flaw_last_turn_goes_to_finalizer(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
         max_turns=1,
@@ -337,17 +428,21 @@ def test_parse_error_missing_solution_fail_route(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.FAILED
-    assert out.failure_reason == "missing_solution"
+    assert out.status == "FAILED"
+    assert out.failure_reason == "max_turns_exhausted"
     events = _read_history_events(runs_root, "p-parse-fail")
-    parse_events = [e for e in events if e.get("agent_node") == "PARSE_ERROR"]
-    assert parse_events
-    assert parse_events[0].get("parse_error_code") == "missing_solution"
+    parse_events = [e for e in events if e.get("node") == "PARSE_ERROR"]
+    assert not parse_events
 
 
 def test_citation_warning_soft_gate_route(tmp_path: Path) -> None:
     class _CitationPipeline:
-        def call_generator(self, problem_text: str, lesson: str | None = None):
+        def call_generator(
+            self,
+            problem_text: str,
+            lesson: str | None = None,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp(content="<solution>ok</solution>", reasoning_content="gen")
 
         def call_verifier(self, problem_text: str, proof_text: str):
@@ -362,11 +457,17 @@ def test_citation_warning_soft_gate_route(tmp_path: Path) -> None:
                 "phase1",
             )
 
-        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        def call_reviser(
+            self,
+            problem_text: str,
+            previous_solution: str,
+            verification_report: str,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp(content=previous_solution, reasoning_content="rev")
 
         def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
-            return RunStatus.PARTIAL.value, "", current_solution, ""
+            return "PROGRESS", "", current_solution, ""
 
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
@@ -380,11 +481,11 @@ def test_citation_warning_soft_gate_route(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
     assert "Citation review reported 2 failed item" in (out.final_output or "")
 
     events = _read_history_events(runs_root, "p-citation")
-    warning_events = [e for e in events if e.get("agent_node") == "WARNING"]
+    warning_events = [e for e in events if e.get("node") == "WARNING"]
     assert warning_events
     assert warning_events[0].get("warning_type") == "citation_review"
 
@@ -395,7 +496,12 @@ def test_route_critical_flaw_back_to_generator(tmp_path: Path) -> None:
             self.generator_calls = 0
             self.verifier_calls = 0
 
-        def call_generator(self, problem_text: str, lesson: str | None = None):
+        def call_generator(
+            self,
+            problem_text: str,
+            lesson: str | None = None,
+            lemma_context_items: list[str] | None = None,
+        ):
             self.generator_calls += 1
             return _Resp(content=f"<solution>candidate-{self.generator_calls}</solution>", reasoning_content="gen")
 
@@ -423,11 +529,17 @@ def test_route_critical_flaw_back_to_generator(tmp_path: Path) -> None:
                 "phase1",
             )
 
-        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        def call_reviser(
+            self,
+            problem_text: str,
+            previous_solution: str,
+            verification_report: str,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp(content=previous_solution, reasoning_content="rev")
 
         def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
-            return RunStatus.PARTIAL.value, "", current_solution, ""
+            return "PROGRESS", "", current_solution, ""
 
     runs_root = tmp_path / "runs"
     pipeline = _CriticalPipeline()
@@ -442,5 +554,6 @@ def test_route_critical_flaw_back_to_generator(tmp_path: Path) -> None:
 
     out = orchestrator.run(state)
 
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
     assert pipeline.generator_calls >= 2
+

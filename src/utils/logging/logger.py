@@ -14,12 +14,12 @@ def _resolve_run_dir(problem_id: str, runs_root: Path) -> Path:
 def append_raw_event(problem_id: str, payload: dict, runs_root: Path = RUNS_DIR) -> None:
 	"""写入一条 raw 事件日志（JSONL）。
 
-	必须包含字段：agent_node, turn_id, timestamp。
+	必须包含字段：node, turn_id, timestamp。
 	"""
 	if not isinstance(payload, dict):
 		raise TypeError("payload must be a dict")
 
-	required_keys = ("agent_node", "turn_id", "timestamp")
+	required_keys = ("node", "turn_id", "timestamp")
 	missing_keys = [key for key in required_keys if key not in payload]
 	if missing_keys:
 		raise ValueError(f"raw payload missing required keys: {missing_keys}")

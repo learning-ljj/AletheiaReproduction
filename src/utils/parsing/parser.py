@@ -2,7 +2,7 @@
 
 import re
 
-from src.core.state import VerificationDecision
+from src.memory.state import VerificationDecision
 
 
 class ParseContractError(ValueError):
@@ -243,22 +243,6 @@ def parse_verification_decision(verification_text: str) -> VerificationDecision:
 		"invalid_verdict",
 		"Missing <verdict> tag in Verifier output",
 	)
-
-
-def parse_final_xml_output(final_text: str) -> tuple[str, str, str]:
-	"""解析 FINAL 输出的 XML 三段：status / verdict / solution。"""
-	status = extract_xml_tag(final_text, "status").strip().upper()
-	verdict = extract_xml_tag(final_text, "verdict").strip()
-	solution = extract_xml_tag(final_text, "solution").strip()
-
-	if status not in ("PARTIAL_PROGRESS", "BEYOND_CAPABILITY"):
-		raise ParseContractError("malformed_tag", f"Invalid <status> value: {status!r}")
-	if not verdict:
-		raise ParseContractError("invalid_verdict", "Missing <verdict> content in FINAL output")
-	if not solution:
-		raise ParseContractError("missing_solution", "Missing <solution> content in FINAL output")
-	return status, verdict, solution
-
 
 def normalize_short_answer(text: str) -> str:
 	"""Normalize a short-answer string for exact-match checking.

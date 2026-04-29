@@ -1,0 +1,5 @@
+Let $a_1, a_2, \ldots, a_{2026}$ satisfy $3^i < a_i < 3^{i+1}$ for each $i$. For each $1\le i\le 2025$, define
+\[
+A_i = \sum_{1\leqslant x\leqslant i+1}\prod_{y\neq x}\frac{a_{x}a_{y}-1}{a_{x}-a_{y}}.
+\]
+Find all possible values of $\sum_{i=1}^{2025} A_i^2$

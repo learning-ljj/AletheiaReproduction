@@ -1,5 +1,8 @@
 """Tool schema registry for OpenAI function calling."""
 
+# 这里定义的是“给模型看的工具说明书”，不是工具实现本身。
+# 模型会根据 name/description/parameters 生成 tool_calls，
+# 真实执行由 src/tools/registry.py 的 execute_tool 完成。
 _TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
@@ -111,4 +114,5 @@ _TOOL_SCHEMAS: list[dict] = [
 
 def get_tool_schemas() -> list[dict]:
     """Return tool schema list in OpenAI function-calling format."""
+    # 直接返回静态 schema 列表，调用侧不要原地修改该对象。
     return _TOOL_SCHEMAS

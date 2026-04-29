@@ -1,0 +1,1 @@
+Given a positive integer $a$, let $\pi:\{1,2,\ldots , a\}\to\{1,2,\ldots , a\}$ be a bijection. Find the minimum possible value of $\sum_{i=1}^{a}{\left\lfloor \frac{\pi(i)}{i} \right\rfloor}$.

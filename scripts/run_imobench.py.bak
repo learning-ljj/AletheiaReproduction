@@ -44,6 +44,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -51,11 +52,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()
-
-from src.core.agent import AletheiaAgent
-from src.core.config import load_config, load_prompts
-from src.models.llm_client import create_llm_client
-from src.utils.evaluation.data_loader import load_answerbench_full, load_gradingbench_full, load_proofbench_full
 from src.utils.logging.raw_log_reader import load_raw_events, resolve_run_artifact_path, resolve_run_log_path
 
 _W = 72
@@ -115,6 +111,90 @@ def _read_run_history(run_id: str, runs_root: Path) -> list[dict]:
     except Exception:
         return []
     return _serialize_history(events)
+
+
+def _normalize_lemma_text(value: object) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _collect_run_quality_metrics(run_id: str, runs_root: Path) -> dict:
+    from src.utils.parsing.parser import parse_lemmas
+
+    metric = {
+        "lemma_candidate_count": 0,
+        "verified_lemma_count": 0,
+        "lemma_accept_rate": 0.0,
+        "citation_warning_count": 0,
+        "has_citation_warning": False,
+        "run_log_path": str(resolve_run_log_path(problem_id=run_id, runs_root=runs_root)),
+    }
+
+    try:
+        events = load_raw_events(problem_id=run_id, runs_root=runs_root)
+    except Exception as exc:  # noqa: BLE001
+        metric["run_log_error"] = str(exc)
+        return metric
+
+    candidate_lemmas: set[str] = set()
+    verified_lemmas: set[str] = set()
+    citation_warning_count = 0
+
+    for event in events:
+        node = str(event.get("node", "")).upper()
+
+        if node in {"GENERATOR", "REVISER"}:
+            content = str(event.get("content", "") or "")
+            for lemma in parse_lemmas(content):
+                normalized = _normalize_lemma_text(lemma)
+                if normalized:
+                    candidate_lemmas.add(normalized)
+            continue
+
+        if node == "VERIFIER":
+            verified_items = event.get("verified_lemmas") or []
+            if isinstance(verified_items, str):
+                verified_items = [verified_items]
+            if isinstance(verified_items, list):
+                for lemma in verified_items:
+                    normalized = _normalize_lemma_text(lemma)
+                    if normalized and normalized.upper() != "NONE":
+                        verified_lemmas.add(normalized)
+            continue
+
+        if node == "WARNING":
+            warning_type = str(event.get("warning_type", "")).lower()
+            warning_text = str(event.get("warning", "")).lower()
+            if warning_type == "citation_review" or "citation" in warning_text:
+                citation_warning_count += 1
+
+    candidate_count = len(candidate_lemmas)
+    verified_count = len(verified_lemmas)
+    metric.update({
+        "lemma_candidate_count": candidate_count,
+        "verified_lemma_count": verified_count,
+        "lemma_accept_rate": round(verified_count / candidate_count, 4) if candidate_count else 0.0,
+        "citation_warning_count": citation_warning_count,
+        "has_citation_warning": citation_warning_count > 0,
+    })
+    return metric
+
+
+def _aggregate_quality_metrics(results: list[dict]) -> dict:
+    total = len(results)
+    total_lemma_candidates = sum(int(r.get("lemma_candidate_count", 0) or 0) for r in results)
+    total_verified_lemmas = sum(int(r.get("verified_lemma_count", 0) or 0) for r in results)
+    citation_warning_count = sum(int(r.get("citation_warning_count", 0) or 0) for r in results)
+    citation_warning_problems = sum(1 for r in results if r.get("has_citation_warning"))
+
+    return {
+        "total_lemma_candidates": total_lemma_candidates,
+        "total_verified_lemmas": total_verified_lemmas,
+        "lemma_accept_rate": round(total_verified_lemmas / total_lemma_candidates, 4)
+        if total_lemma_candidates else 0.0,
+        "citation_warning_count": citation_warning_count,
+        "citation_warning_problems": citation_warning_problems,
+        "citation_warning_rate": round(citation_warning_problems / total, 4) if total else 0.0,
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -210,7 +290,7 @@ def _human_to_3way(reward: str) -> str:
 def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict], dict]:
     """运行 AnswerBench，返回 (per-item results, summary)。"""
     from src.utils.evaluation.evaluator import check_answer
-    from src.utils.parsing.parser import normalize_short_answer
+    from src.utils.parsing.parser import extract_xml_tag, normalize_short_answer
 
     results = []
     for item in data:
@@ -219,52 +299,78 @@ def run_answerbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict
         t0 = time.time()
         try:
             state = agent.solve(run_id, item["problem"], ground_truth=item.get("answer", ""))
-            predicted = state.final_answer or state.current_proof or ""
-            predicted_for_check = normalize_short_answer(predicted)
+            predicted = state.final_answer or state.current_proof
+            # 如果 Generator/Verifier 使用了 XML 输出（<verdict>），优先从中提取短答并归一化
+            verdict_candidate = extract_xml_tag(predicted, "verdict")
+            if verdict_candidate:
+                predicted_for_check = normalize_short_answer(verdict_candidate)
+            else:
+                # 也对直接的预测文本做归一化，减少格式差异带来的不匹配
+                predicted_for_check = normalize_short_answer(predicted)
+
             correct = check_answer(predicted_for_check, item["answer"])
             elapsed = time.time() - t0
             history_info = _read_run_history(run_id=run_id, runs_root=runs_root)
             final_verifier_decision = _last_verifier_decision(history_info)
-            
+            quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
+                "subcategory": item.get("subcategory", ""),
+                "source": item.get("source", ""),
                 "correct": correct,
                 "iterations": state.iteration_count,
                 "time_s": round(elapsed, 1),
                 "ground_truth": item["answer"],
+                "predicted_raw": predicted,
+                "predicted_for_check": predicted_for_check,
                 "final_verifier_decision": final_verifier_decision,
+                "verifier_false_positive": final_verifier_decision == "CORRECT" and not correct,
+                "verifier_false_negative": final_verifier_decision in ("MINOR_FLAW", "CRITICAL_FLAW") and correct,
                 "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
-            results.append(entry)
+            entry.update(quality_metrics)
             status = "✅" if correct else "❌"
-            print(f"  [{pid}] {status}  iters={state.iteration_count}  time={elapsed:.1f}s")
-        except Exception as exc:
+            print(f"  [{pid}] {status}  iters={state.iteration_count}  "
+                  f"time={elapsed:.1f}s  gt={item['answer'][:30]}")
+        except Exception as exc:  # noqa: BLE001
             elapsed = time.time() - t0
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
+                "subcategory": item.get("subcategory", ""),
+                "source": item.get("source", ""),
                 "correct": False,
                 "iterations": 0,
                 "time_s": round(elapsed, 1),
                 "error": str(exc),
                 "history": [],
             }
-            results.append(entry)
-            print(f"  [{pid}] ⚠️  Error: {str(exc)[:60]}")
+            entry.update(_collect_run_quality_metrics(run_id=run_id, runs_root=runs_root))
+            print(f"  [{pid}] ⚠️  Error: {exc}")
+        results.append(entry)
 
-    total = len(results)
     correct_count = sum(1 for r in results if r.get("correct"))
+    total = len(results)
+    verifier_fp = sum(1 for r in results if r.get("verifier_false_positive"))
+    verifier_fn = sum(1 for r in results if r.get("verifier_false_negative"))
+    partial_count = sum(1 for r in results if r.get("run_status") == "PROGRESS")
     summary = {
         "dataset": "answerbench",
         "total": total,
         "correct": correct_count,
         "exact_match_accuracy": round(correct_count / total, 4) if total else 0.0,
+        "partial_progress": partial_count,
+        "verifier_false_positive": verifier_fp,
+        "verifier_false_negative": verifier_fn,
         "error_count": sum(1 for r in results if "error" in r),
     }
+    summary.update(_aggregate_quality_metrics(results))
     return results, summary
 
 
@@ -283,17 +389,19 @@ def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict]
         t0 = time.time()
         try:
             state = agent.solve(run_id, item["problem"], ground_truth=item.get("solution", ""))
-            predicted = state.final_answer or state.current_proof or ""
+            predicted = state.final_answer or state.current_proof
             completeness = check_proof_completeness(predicted)
             elapsed = time.time() - t0
             history_info = _read_run_history(run_id=run_id, runs_root=runs_root)
             final_decision = _last_verifier_decision(history_info) or "NO_VERDICT"
-            
+            quality_metrics = _collect_run_quality_metrics(run_id=run_id, runs_root=runs_root)
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "level": item.get("level", ""),
+                "source": item.get("source", ""),
                 "completeness": completeness,
                 "final_verifier_decision": final_decision,
                 "has_final_answer": state.final_answer is not None,
@@ -302,16 +410,19 @@ def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict]
                 "run_status": state.status.value if state.status else None,
                 "history": history_info,
             }
-            results.append(entry)
+            entry.update(quality_metrics)
             status = "✅" if state.final_answer is not None else "⚠️"
-            print(f"  [{pid}] {status}  decision={final_decision}  iters={state.iteration_count}  time={elapsed:.1f}s")
-        except Exception as exc:
+            print(f"  [{pid}] {status}  decision={final_decision}  "
+                  f"iters={state.iteration_count}  time={elapsed:.1f}s")
+        except Exception as exc:  # noqa: BLE001
             elapsed = time.time() - t0
             entry = {
                 "problem_id": pid,
                 "run_id": run_id,
+                "problem": item.get("problem", ""),
                 "category": item.get("category", ""),
                 "level": item.get("level", ""),
+                "source": item.get("source", ""),
                 "completeness": check_proof_completeness(""),
                 "final_verifier_decision": "ERROR",
                 "has_final_answer": False,
@@ -320,21 +431,33 @@ def run_proofbench(agent, data: list[dict], runs_root: Path) -> tuple[list[dict]
                 "error": str(exc),
                 "history": [],
             }
-            results.append(entry)
-            print(f"  [{pid}] ⚠️  Error: {str(exc)[:60]}")
+            entry.update(_collect_run_quality_metrics(run_id=run_id, runs_root=runs_root))
+            print(f"  [{pid}] ⚠️  Error: {exc}")
+        results.append(entry)
 
     total = len(results)
+    format_ok = sum(
+        1 for r in results
+        if r.get("completeness", {}).get("has_preliminary_solution")
+    )
+    correct_v = sum(
+        1 for r in results if r.get("final_verifier_decision") == "CORRECT"
+    )
     has_ans = sum(1 for r in results if r.get("has_final_answer"))
-    correct_v = sum(1 for r in results if r.get("final_verifier_decision") == "CORRECT")
+    partial_count = sum(1 for r in results if r.get("run_status") == "PROGRESS")
     summary = {
         "dataset": "proofbench",
         "total": total,
-        "has_final_answer": has_ans,
-        "has_final_answer_rate": round(has_ans / total, 4) if total else 0.0,
+        "format_complete": format_ok,
+        "format_complete_rate": round(format_ok / total, 4) if total else 0.0,
         "correct_verdict": correct_v,
         "correct_verdict_rate": round(correct_v / total, 4) if total else 0.0,
+        "has_final_answer": has_ans,
+        "has_final_answer_rate": round(has_ans / total, 4) if total else 0.0,
+        "partial_progress": partial_count,
         "error_count": sum(1 for r in results if "error" in r),
     }
+    summary.update(_aggregate_quality_metrics(results))
     return results, summary
 
 
@@ -424,12 +547,33 @@ def run_gradingbench(llm_client, data: list[dict]) -> tuple[list[dict], dict]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 辅助函数：多样性选题
+# 输出汇总打印
 # ════════════════════════════════════════════════════════════════════════════
 
+def _print_summary(summary: dict) -> None:
+    dataset = summary["dataset"]
+    print(f"\n{'═' * _W}")
+    print(f"  Benchmark Summary: {dataset.upper()}")
+    print(f"{'═' * _W}")
+    for k, v in summary.items():
+        if k == "confusion_matrix":
+            print(f"  confusion_matrix (human→pred):")
+            for human_label, pred_counts in v.items():
+                print(f"    {human_label:12s}: {dict(pred_counts)}")
+        else:
+            print(f"  {k:<35s}: {v}")
+    print(f"{'═' * _W}\n")
+
+
 def select_proofbench_diverse(data: list[dict], n: int = 10) -> list[dict]:
-    """从 proofbench 全集按类别+难度多样性选取 n 道题。"""
+    """从 proofbench 全集按类别+难度多样性选取 n 道题。
+
+    策略：优先覆盖不同类别（Algebra/Combinatorics/Number theory/Geometry）和
+    不同难度层次（pre-IMO → IMO-easy → IMO-medium → IMO-hard），
+    用轮询方式均衡抽取。
+    """
     from collections import defaultdict
+    # 按 (category, level) 分组
     groups: dict[tuple, list] = defaultdict(list)
     for item in data:
         key = (item.get("category", ""), item.get("level", ""))
@@ -439,6 +583,7 @@ def select_proofbench_diverse(data: list[dict], n: int = 10) -> list[dict]:
     levels = ["pre-IMO", "IMO-easy", "IMO-medium", "IMO-hard"]
 
     selected: list[dict] = []
+    # 第一轮：按难度层次，逐类别取一道
     for level in levels:
         for cat in categories:
             if len(selected) >= n:
@@ -449,6 +594,7 @@ def select_proofbench_diverse(data: list[dict], n: int = 10) -> list[dict]:
         if len(selected) >= n:
             break
 
+    # 补充：若仍不足 n 道，从剩余中按原始顺序补
     remaining = [item for items in groups.values() for item in items]
     for item in remaining:
         if len(selected) >= n:
@@ -459,10 +605,15 @@ def select_proofbench_diverse(data: list[dict], n: int = 10) -> list[dict]:
 
 
 def select_answerbench_diverse(data: list[dict], n: int = 30) -> list[dict]:
-    """从 answerbench_v2 全集按类别+子类别多样性选取 n 道题。"""
+    """从 answerbench_v2 全集按类别+子类别多样性选取 n 道题。
+
+    策略：均衡地从 Algebra、Combinatorics、Geometry、Number theory 四类中抽取，
+    同一类别内按 Subcategory 去重以保证子类别多样性。
+    """
     from collections import defaultdict
     main_cats = ["Algebra", "Combinatorics", "Geometry", "Number theory"]
 
+    # 按 category 分组，并在类别内按 subcategory 轮询
     cat_groups: dict[str, list] = defaultdict(list)
     other: list[dict] = []
     for item in data:
@@ -472,13 +623,15 @@ def select_answerbench_diverse(data: list[dict], n: int = 30) -> list[dict]:
         else:
             other.append(item)
 
-    per_cat = n // len(main_cats)
-    extra   = n % len(main_cats)
+    # 每类分配额度（尽量均等）
+    per_cat = n // len(main_cats)  # 7
+    extra   = n % len(main_cats)   # 2
 
     selected: list[dict] = []
     for i, cat in enumerate(main_cats):
         quota = per_cat + (1 if i < extra else 0)
         items = cat_groups[cat]
+        # 在类别内按 subcategory 轮询以保证子类别多样性
         sub_groups: dict[str, list] = defaultdict(list)
         for item in items:
             sub_groups[item.get("subcategory", "")].append(item)
@@ -494,6 +647,7 @@ def select_answerbench_diverse(data: list[dict], n: int = 30) -> list[dict]:
             if not progress:
                 break
 
+    # 如果因类别不均等导致不足，从 other 补充
     for item in other:
         if len(selected) >= n:
             break
@@ -506,18 +660,20 @@ def select_answerbench_diverse(data: list[dict], n: int = 30) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="IMO Bench 批量评测脚本",
+        description="IMOBench 全数据集实验脚本",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
     parser.add_argument(
         "--dataset",
         required=True,
         choices=["answerbench", "proofbench", "gradingbench", "all"],
-        help="要评测的数据集",
+        help="要评测的数据集（all = 三类全部运行）",
     )
     parser.add_argument(
         "--count", type=int, default=None,
-        help="每个数据集取前 N 题（answerbench 默认 30，proofbench 默认 10）；0 表示全部",
+        help="每个数据集取前 N 题（answerbench 默认30，proofbench 默认10，gradingbench 默认30）；"
+             "0 表示取全部",
     )
     parser.add_argument(
         "--max-turns", type=int, default=3,
@@ -527,7 +683,27 @@ def main() -> None:
         "--output-dir", type=str, default="runs/benchmarks",
         help="结果 JSON 输出目录",
     )
+    parser.add_argument(
+        "--no-worklog", action="store_true",
+        help="禁用 Markdown 工作日志生成",
+    )
+    parser.add_argument(
+        "--worklog-summary-mode",
+        choices=["llm", "rule"],
+        default="llm",
+        help="工作日志阶段摘要模式：llm=调用模型二次摘要（默认），rule=规则摘要",
+    )
     args = parser.parse_args()
+
+    # ── 加载配置 ──────────────────────────────────────────────────────
+    from src.core.agent import AletheiaAgent
+    from src.core.config import load_config, load_prompts
+    from src.models.llm_client import create_llm_client
+    from src.utils.evaluation.data_loader import (
+        load_answerbench_full,
+        load_gradingbench_full,
+        load_proofbench_full,
+    )
 
     config = load_config()
     prompts = load_prompts()
@@ -535,6 +711,7 @@ def main() -> None:
     runs_root = Path(config.get("agent", {}).get("runs_root", "runs"))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    start_time = datetime.now()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -545,47 +722,105 @@ def main() -> None:
     )
 
     all_summaries: list[dict] = []
+    all_results: dict[str, list[dict]] = {}
 
     for dataset in datasets_to_run:
+        # ── 数据集默认题数 ──────────────────────────────────────────────
         default_counts = {"answerbench": 30, "proofbench": 10, "gradingbench": 30}
         count = args.count if args.count is not None else default_counts.get(dataset, 30)
 
         print(f"\n{'═' * _W}")
-        print(f"  Dataset: {dataset.upper()}  |  Count: {count}  |  Max turns: {args.max_turns}")
+        print(f"  Dataset: {dataset.upper()}  |  Count: {count}  |  "
+              f"Max turns: {args.max_turns}")
         print(f"{'═' * _W}\n")
 
         if dataset == "answerbench":
+            # 从 answerbench_v2 加载全字段，按类别多样性选题
             full_data = load_answerbench_full()
-            data = select_answerbench_diverse(full_data, n=count) if count > 0 else full_data[:count] if count < 0 else full_data
+            if count == 0:
+                data = full_data
+            else:
+                data = select_answerbench_diverse(full_data, n=count)
             agent = AletheiaAgent(config, prompts)
             results, summary = run_answerbench(agent, data, runs_root=runs_root)
 
         elif dataset == "proofbench":
+            # 从 proofbench 加载全字段，按类别+难度多样性选题
             full_data = load_proofbench_full()
-            data = select_proofbench_diverse(full_data, n=count) if count > 0 else full_data[:count] if count < 0 else full_data
+            if count == 0:
+                data = full_data
+            else:
+                data = select_proofbench_diverse(full_data, n=count)
             agent = AletheiaAgent(config, prompts)
             results, summary = run_proofbench(agent, data, runs_root=runs_root)
 
-        else:
+        else:  # gradingbench
             data = load_gradingbench_full()
             if count > 0:
                 data = data[:count]
             llm_client = create_llm_client(config)
             results, summary = run_gradingbench(llm_client, data)
 
-        print(f"\n{'═' * _W}")
-        print(f"  Summary: {dataset.upper()}")
-        print(f"{'═' * _W}")
-        for k, v in summary.items():
-            print(f"  {k:<35s}: {v}")
-        print(f"{'═' * _W}\n")
-
+        _print_summary(summary)
         all_summaries.append(summary)
+        all_results[dataset] = results
 
+        # 保存单数据集结果
         out_path = output_dir / f"imobench_{dataset}_{timestamp}.json"
         with open(out_path, "w", encoding="utf-8") as f:
-            json.dump({"summary": summary, "results": results}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {"summary": summary, "results": results},
+                f, ensure_ascii=False, indent=2,
+            )
         print(f"  Results saved to: {out_path}\n")
+
+    # 若运行了多个数据集，打印总汇总
+    if len(all_summaries) > 1:
+        print(f"\n{'═' * _W}")
+        print("  OVERALL SUMMARY")
+        print(f"{'═' * _W}")
+        for s in all_summaries:
+            ds = s["dataset"]
+            if ds == "answerbench":
+                print(f"  answerbench  exact_match_accuracy = {s['exact_match_accuracy']:.2%}  "
+                      f"({s['correct']}/{s['total']})")
+            elif ds == "proofbench":
+                print(f"  proofbench   correct_verdict_rate = {s['correct_verdict_rate']:.2%}  "
+                      f"({s['correct_verdict']}/{s['total']})")
+            else:
+                print(f"  gradingbench grader_accuracy_3way  = {s['grader_accuracy_3way']:.2%}  "
+                      f"({s['3way_correct']}/{s['total']})")
+        print(f"{'═' * _W}\n")
+
+    # ── 批量结束后按题生成新版 Markdown 工作日志 ────────────────────────
+    if not args.no_worklog:
+        from src.utils.logging.worklog_builder import WorklogBuilder
+
+        wb = WorklogBuilder(llm_config=config)
+        generated_count = 0
+        for dataset_results in all_results.values():
+            for row in dataset_results:
+                run_id = row.get("run_id")
+                pid = row.get("problem_id")
+                log_key = run_id or pid
+                if not log_key:
+                    continue
+                jsonl_path = resolve_run_log_path(problem_id=log_key, runs_root=runs_root)
+                if not jsonl_path.exists():
+                    continue
+                md_path = resolve_run_artifact_path(
+                    problem_id=log_key,
+                    artifact_name="worklog.md",
+                    runs_root=runs_root,
+                )
+                md_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    wb.build_problem_worklog(str(jsonl_path), str(md_path))
+                    generated_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  ⚠️  worklog 生成失败 {log_key}: {exc}")
+        if generated_count:
+            print(f"  📄 已生成 {generated_count} 份题目级工作日志（WorklogBuilder）。")
 
 
 if __name__ == "__main__":

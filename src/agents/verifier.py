@@ -7,7 +7,7 @@ import re
 from typing import Callable
 
 from src.agents.citation_reviewer import CitationReviewerAgent
-from src.core.state import VerificationDecision
+from src.memory.state import VerificationDecision
 from src.memory.problem_memory import get_current_problem_memory
 from src.tools.envelope import extract_tool_success_data, parse_tool_payload
 from src.utils.parsing.parser import (
@@ -28,7 +28,7 @@ class VerifierAgent:
         prompts: dict,
         tools: list[dict],
         tool_executor: Callable[[str, dict], str],
-        max_tool_rounds: int = 5,
+        max_tool_rounds: int = 20,
     ):
         self.llm_client = llm_client
         self.prompts = prompts
@@ -102,6 +102,25 @@ class VerifierAgent:
             "Call tool `call_citation_reviewer` exactly once using these arrays, then use its result in Phase 3 <citation_review>.\n"
             f"cites={json.dumps(cites, ensure_ascii=False)}\n"
             f"claim_spans={json.dumps(claim_spans, ensure_ascii=False)}"
+        )
+
+    @classmethod
+    def _build_format_repair_output(cls, detail: str) -> str:
+        # 当 verifier 自身无法产出可解析契约时，降级成标准 MINOR_FLAW。
+        # 这样 orchestrator 只做统一路由，不再介入格式兜底。
+        safe_detail = " ".join((detail or "").split()).replace("<", "(").replace(">", ")")
+        suffix = f" Detail: {safe_detail}" if safe_detail else ""
+        verification = (
+            "Verifier output contract validation failed. "
+            "Please fix XML format and keep mathematically valid parts unchanged unless necessary. "
+            "Return valid <verdict> and <solution>."
+            + suffix
+        )
+        return (
+            "<verdict>MINOR_FLAW</verdict>\n"
+            f"<verification>{verification}</verification>\n"
+            "<verified_lemmas>NONE</verified_lemmas>\n"
+            "<citation_review>NONE</citation_review>"
         )
 
     def _attach_citation_review(
@@ -199,17 +218,30 @@ class VerifierAgent:
                 if self._has_verifier_contract(full_text):
                     break
             else:
-                raise ValueError("Verifier Phase 3 missing required <verdict>/<verification> tags")
+                full_text = self._build_format_repair_output(
+                    "Phase 3 missing required <verdict>/<verification> tags after retries"
+                )
 
         tool_trace = getattr(phase2_resp, "tool_calls_trace", [])
 
         # 统一补齐可选字段，避免下游“有时有、有时无”。
         full_text = self._ensure_tag(full_text, "verified_lemmas", default_content="NONE")
-        full_text = self._attach_citation_review(full_text, solution_body, tool_trace)
+        try:
+            full_text = self._attach_citation_review(full_text, solution_body, tool_trace)
 
-        # 最终路由以 LLM verdict 为准（不再做本地规则覆写）。
-        decision = parse_verification_decision(full_text)
-        verification_report = "" if decision == VerificationDecision.CORRECT else extract_verification_report(full_text)
+            # 最终路由以 LLM verdict 为准（不再做本地规则覆写）。
+            decision = parse_verification_decision(full_text)
+            verification_report = "" if decision == VerificationDecision.CORRECT else extract_verification_report(full_text)
+        except Exception as exc:  # noqa: BLE001
+            prior_verified_lemmas = extract_xml_tag(full_text, "verified_lemmas").strip() or "NONE"
+            prior_citation_review = extract_xml_tag(full_text, "citation_review").strip() or "NONE"
+            full_text = self._build_format_repair_output(
+                f"Verifier output parsing failed: {type(exc).__name__}: {exc}"
+            )
+            full_text = self._upsert_tag(full_text, "verified_lemmas", prior_verified_lemmas)
+            full_text = self._upsert_tag(full_text, "citation_review", prior_citation_review)
+            decision = VerificationDecision.MINOR_FLAW
+            verification_report = extract_xml_tag(full_text, "verification").strip()
 
         phase1_analysis = phase1_resp.content or ""
 

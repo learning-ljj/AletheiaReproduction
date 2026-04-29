@@ -1,7 +1,14 @@
 """Memory package for persistent and typed runtime state."""
 
 from src.memory.problem_memory import ProblemMemory, get_current_problem_memory, set_current_problem_memory
-from src.memory.state import ProblemSnapshot, StageSnapshot, StateValidationError
+from src.memory.state import (
+	ProblemSnapshot,
+	StageSnapshot,
+	StateValidationError,
+	VerificationDecision,
+	RunStatus,
+	ProofState,
+)
 
 __all__ = [
 	"ProblemMemory",
@@ -10,4 +17,8 @@ __all__ = [
 	"ProblemSnapshot",
 	"StageSnapshot",
 	"StateValidationError",
+    "VerificationDecision",
+	"RunStatus",
+    "ProofState",
+
 ]

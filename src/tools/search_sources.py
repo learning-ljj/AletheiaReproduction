@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import ssl
-import time
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -23,6 +22,8 @@ _ATOM_NS = {
 
 
 def _http_get(url: str, *, timeout: int = 20, headers: dict[str, str] | None = None) -> bytes:
+    # 某些学术源在企业/校园网络下会出现 SSL 链异常，
+    # 这里保留“宽松 SSL 回退”作为兜底，优先保证可用性。
     def _make_lenient_ssl_context() -> ssl.SSLContext:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -34,44 +35,31 @@ def _http_get(url: str, *, timeout: int = 20, headers: dict[str, str] | None = N
         request_headers.update(headers)
     request = urllib.request.Request(url, headers=request_headers)
 
-    last_error: Exception | None = None
-    for attempt in range(3):
-        if attempt > 0:
-            time.sleep(2 ** (attempt - 1))
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except ssl.SSLError:
+        with urllib.request.urlopen(
+            request,
+            timeout=timeout,
+            context=_make_lenient_ssl_context(),
+        ) as response:
+            return response.read()
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLError):
+            with urllib.request.urlopen(
+                request,
+                timeout=timeout,
+                context=_make_lenient_ssl_context(),
+            ) as response:
                 return response.read()
-        except ssl.SSLError as exc:
-            last_error = exc
-            try:
-                with urllib.request.urlopen(
-                    request,
-                    timeout=timeout,
-                    context=_make_lenient_ssl_context(),
-                ) as response:
-                    return response.read()
-            except Exception as retry_exc:  # noqa: BLE001
-                last_error = retry_exc
-        except urllib.error.URLError as exc:
-            last_error = exc
-            reason = getattr(exc, "reason", None)
-            if isinstance(reason, ssl.SSLError):
-                try:
-                    with urllib.request.urlopen(
-                        request,
-                        timeout=timeout,
-                        context=_make_lenient_ssl_context(),
-                    ) as response:
-                        return response.read()
-                except Exception as retry_exc:  # noqa: BLE001
-                    last_error = retry_exc
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-
-    raise last_error or RuntimeError("search_sources._http_get failed unexpectedly")
+        raise
 
 
 def _decode_openalex_abstract(inverted_index: dict | None) -> str:
+    # OpenAlex 的摘要是倒排索引格式：token -> positions。
+    # 这里按位置重排回自然文本。
     if not isinstance(inverted_index, dict):
         return ""
 
@@ -102,6 +90,7 @@ def _normalize_doi(raw_doi: str | None) -> str:
 
 
 def search_openalex(query: str, limit: int) -> list[dict]:
+    # 标准化查询并限制上限，避免 API 负载过高。
     q = (query or "").strip()
     if not q:
         return []
@@ -151,6 +140,7 @@ def search_openalex(query: str, limit: int) -> list[dict]:
 
 
 def search_arxiv(query: str, limit: int) -> list[dict]:
+    # arXiv 返回 Atom XML，这里统一转换为项目内部 paper 字典结构。
     q = (query or "").strip()
     if not q:
         return []
@@ -203,6 +193,9 @@ def search_arxiv(query: str, limit: int) -> list[dict]:
 
 
 def search_semantic_scholar(query: str, limit: int, *, api_key: str | None = None) -> list[dict]:
+    # Semantic Scholar 支持可选 API key：
+    # - 有 key：更稳定
+    # - 无 key：仍可尝试匿名访问（受限）
     q = (query or "").strip()
     if not q:
         return []
@@ -261,6 +254,7 @@ def build_default_source_handlers(config: dict | None = None) -> dict[str, Calla
 
     semantic_scholar_api_key = str(tools_cfg.get("semantic_scholar_api_key") or "").strip() or None
 
+    # 返回 source_name -> handler 的映射；SearcherAgent 会按该映射遍历调用。
     handlers: dict[str, Callable[[str, int], list[dict]]] = {}
     for source in sources:
         if source == "openalex":

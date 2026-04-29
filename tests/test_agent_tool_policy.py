@@ -2,7 +2,7 @@ import json
 
 from src.core.agent import (
     _AGENT_TOOL_ALLOWLIST,
-    _AgentRuntime,
+    AgentPipeline,
     _build_scoped_tool_executor,
     _filter_tool_schemas,
 )
@@ -70,7 +70,7 @@ def test_agent_runtime_uses_stage_tool_allowlists() -> None:
         },
     }
 
-    runtime = _AgentRuntime(
+    runtime = AgentPipeline(
         llm_client=_DummyLLM(),
         prompts=prompts,
         tool_schemas=schemas,

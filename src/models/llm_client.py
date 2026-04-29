@@ -1,4 +1,4 @@
-"""封装 DeepSeek / 火山方舟 API（兼容 OpenAI SDK），支持思考模式、工具调用与流式输出。"""
+"""封装 provider（例如 DeepSeek / 火山方舟）API，兼容 OpenAI SDK，支持思考模式、工具调用与流式输出。"""
 
 import sys
 from dataclasses import dataclass, field
@@ -15,7 +15,7 @@ _UNSET = object()
 
 @dataclass
 class LLMResponse:
-    """封装 DeepSeek API 响应，分离 reasoning_content 和 content。"""
+    """封装统一 LLM 响应，分离 reasoning_content 和 content。"""
 
     content: str  # 最终回答（解析器 Task 2.1-2.3 的输入源）
     reasoning_content: str = ""  # 思维链（思考模式下非空）
@@ -23,49 +23,37 @@ class LLMResponse:
 
 
 class LLMClient:
-    """DeepSeek / 火山方舟 API 客户端，兼容 OpenAI SDK，支持流式输出。"""
+    """Provider API 客户端，兼容 OpenAI SDK，支持流式输出。"""
 
     def __init__(self, config: dict, stream_file=_UNSET):
         """从 config dict 初始化客户端。
 
         Args:
-            config: 应包含 deepseek.api_key / deepseek.base_url / deepseek.model 等字段。
+            config: 已归一化的 provider payload（必须包含 `provider` 键），
+                通常由 `ProviderFactory.resolve_provider_payload(config)` 生成。
             stream_file: 流式 token 的实时输出目标。
                 - 不传（默认）：写入 sys.stdout。
                 - 传入文件对象（如 sys.stdout）：写入该文件。
                 - 传入 None：禁用实时输出。
         """
-        normalized_config = config
-        if "deepseek" not in normalized_config:
-            normalized_config = ProviderFactory.resolve_provider_payload(config)
-        bundle = ProviderFactory.build_client_bundle(normalized_config)
+        # 要求 caller 传入已归一化 payload（含 'provider' 键）。
+        bundle = ProviderFactory.build_client_bundle(config)
         self._client = bundle.client
         self._model = bundle.model
         self._thinking = bundle.thinking
         self._max_tokens = bundle.max_tokens
-        self._stream_max_retries = bundle.stream_max_retries
-        self._stream_retry_backoff_seconds = bundle.stream_retry_backoff_seconds
         self._stream_file = sys.stdout if stream_file is _UNSET else stream_file
+
+        # 职责拆分：
+        # StreamTransport 负责底层流式读取与网络重试。
+        # ToolCallSession 负责“单轮对话内”多次工具调用闭环。
         self._stream_transport = StreamTransport(
             client=self._client,
             stream_file=self._stream_file,
-            max_retries=self._stream_max_retries,
-            retry_backoff_seconds=self._stream_retry_backoff_seconds,
         )
         self._tool_call_session = ToolCallSession(
             stream_transport=self._stream_transport,
             build_kwargs=self._build_kwargs,
-        )
-
-    def _stream_completion(
-        self,
-        kwargs: dict,
-        stream_prefix: str | None = None,
-    ) -> tuple[str, str, list[dict] | None]:
-        """Delegate stream read and retry logic to StreamTransport."""
-        return self._stream_transport.stream_completion(
-            kwargs,
-            stream_prefix=stream_prefix,
         )
 
     # ------------------------------------------------------------------
@@ -96,7 +84,7 @@ class LLMClient:
         stream_prefix: str | None = None,
     ) -> LLMResponse:
         """发送纯对话请求（流式），返回 LLMResponse。"""
-        reasoning_content, content, _ = self._stream_completion(
+        reasoning_content, content, _ = self._stream_transport.stream_completion(
             self._build_kwargs(messages, thinking=thinking),
             stream_prefix=stream_prefix,
         )
@@ -114,7 +102,7 @@ class LLMClient:
         messages: list,
         tools: list[dict],
         tool_executor: Callable[[str, dict], str],
-        max_tool_rounds: int = 10,
+        max_tool_rounds: int = 20,
         stream_prefix: str | None = None,
     ) -> LLMResponse:
         """思考模式下的多轮工具调用对话（流式）。"""
@@ -137,15 +125,15 @@ class LLMClient:
         )
 
     # ------------------------------------------------------------------
-    # 跨 turn 辅助
+    # 跨 turn ：清除 reasoning_content
     # ------------------------------------------------------------------
 
     @staticmethod
     def clear_reasoning_content(messages: list) -> None:
         """清除 messages 中所有 assistant 消息的 reasoning_content。
 
-        在新 turn 开始前调用，节省带宽并避免传入历史思维链。
-        兼容 SDK Message 对象和 dict 两种格式。
+        在新 turn 开始前调用，避免传入历史思维链。
+        当前主链仅处理 dict 形式消息。
         """
         MessageSanitizer.clear_reasoning_content(messages)
 

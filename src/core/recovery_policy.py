@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.core.state import VerificationDecision
+from src.memory.state import VerificationDecision
 
 
 class RecoveryPolicy:
@@ -27,7 +27,6 @@ class RecoveryPolicy:
     @staticmethod
     def route_on_decision(decision: VerificationDecision) -> str:
         # 判决到节点的固定映射。
-        # 大白话：
         # - CORRECT：直接收敛，进 FINAL
         # - MINOR_FLAW：局部修补，交给 REVISER
         # - CRITICAL_FLAW：结构性问题，回 GENERATOR 重做

@@ -1,4 +1,4 @@
-"""Run one E2E problem with real-time tracking and UTF-8-safe logs.
+﻿"""Run one E2E problem with real-time tracking and UTF-8-safe logs.
 
 Usage:
     .venv\\Scripts\\python.exe tests/realtime_e2e_monitor.py \
@@ -67,12 +67,12 @@ def _collect_signals(stdout_text: str, stderr_text: str, events: list[dict]) -> 
             warnings.append(f"text-signal: {kw}")
 
     for ev in events:
-        if ev.get("agent_node") == "FINAL" and ev.get("failure_reason"):
+        if ev.get("node") == "FINAL" and ev.get("failure_reason"):
             fr = str(ev.get("failure_reason"))
             if fr in {"timeout", "parse_error", "llm_failure", "tool_failure"}:
                 warnings.append(f"final-failure-reason: {fr}")
 
-        if ev.get("agent_node") == "VERIFIER":
+        if ev.get("node") == "VERIFIER":
             traces = ev.get("tool_calls_trace") or []
             for i, t in enumerate(traces, start=1):
                 res = str(t.get("result") or "")
@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         tr.write(f"- run_id: {run_id or '(unknown)'}\n")
         tr.write(f"- jsonl: {jsonl_path.name if jsonl_path and jsonl_path.exists() else '(missing)'}\n")
 
-        final_event = next((e for e in reversed(events) if e.get("agent_node") == "FINAL"), None)
+        final_event = next((e for e in reversed(events) if e.get("node") == "FINAL"), None)
         if final_event:
             tr.write(f"- final_status: {final_event.get('status')}\n")
             tr.write(f"- failure_reason: {final_event.get('failure_reason')}\n")
@@ -241,3 +241,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

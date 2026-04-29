@@ -12,7 +12,7 @@ load_dotenv()
 
 from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
-from src.core.state import RunStatus
+from src.memory.state import RunStatus
 from src.utils.evaluation.data_loader import lookup_ground_truth
 from src.utils.logging.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
 from src.utils.logging.worklog_builder import WorklogBuilder
@@ -131,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f">>> Max turns: {agent.max_turns}")
     if ground_truth:
         print(f">>> Ground truth loaded from: {gt_source}")
+    else:
+        print(">>> Ground truth: not found (running without reference solution)")
     print(f">>> Running Aletheia Agent...\n")
 
     state = None
@@ -147,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f">>> Iterations: {state.iteration_count}")
         if state.status == RunStatus.SUCCESS:
             print(">>> Result: SUCCESS — Complete solution found")
-        elif state.status == RunStatus.PARTIAL:
-            print(">>> Result: PARTIAL — Meaningful progress made (partial solution)")
+        elif state.status == RunStatus.PROGRESS:
+            print(">>> Result: PROGRESS — Meaningful progress made (not fully solved)")
         elif state.status == RunStatus.FAILED:
             reason = state.failure_reason or "unknown"
             print(f">>> Result: FAILED ({reason})")

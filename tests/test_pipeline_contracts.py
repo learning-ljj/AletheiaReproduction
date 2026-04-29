@@ -1,4 +1,4 @@
-import json
+﻿import json
 from pathlib import Path
 
 from src.agents.generator import GeneratorAgent
@@ -7,7 +7,7 @@ from src.agents.verifier import VerifierAgent
 from src.agents.base import BaseAgent
 from src.core.config import load_prompts
 from src.core.orchestrator import Orchestrator
-from src.core.state import ProofState, RunStatus, VerificationDecision
+from src.memory.state import ProofState, VerificationDecision
 
 
 class _Resp:
@@ -26,7 +26,7 @@ class _FakeLLMForGenerator:
         self.chat_calls += 1
         return _Resp(self.outputs[idx])
 
-    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=10, stream_prefix=None):
+    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=20, stream_prefix=None):
         idx = min(self.chat_calls, len(self.outputs) - 1)
         self.chat_calls += 1
         return _Resp(self.outputs[idx])
@@ -124,7 +124,7 @@ def test_verifier_agent_adds_optional_contract_blocks() -> None:
                 return _Resp("phase1")
             return _Resp("<verdict>CORRECT</verdict>\n<verification>ok</verification>")
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod
@@ -159,13 +159,13 @@ def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
             return _Resp(
                 "<verdict>MINOR_FLAW</verdict>\n"
                 "<verification>"
-                "该处属于轻微问题：整数奇偶是众所周知的基础事实，形式不够严密但不影响结论。"
+                "This is a minor issue: parity is a basic fact, and the informal wording does not affect the conclusion."
                 "</verification>\n"
                 "<verified_lemmas>NONE</verified_lemmas>\n"
                 "<citation_review>NONE</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod
@@ -192,7 +192,7 @@ def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
     )
 
     assert decision == VerificationDecision.MINOR_FLAW
-    assert "基础事实" in verification_report
+    assert "basic fact" in verification_report
     assert "<verdict>MINOR_FLAW</verdict>" in full_text
 
 
@@ -207,12 +207,12 @@ def test_verifier_handles_candidate_without_solution_tag() -> None:
                 return _Resp("phase1")
             return _Resp(
                 "<verdict>MINOR_FLAW</verdict>\n"
-                "<verification>输出格式缺失 <solution> 标签，需由 Reviser 修复。</verification>\n"
+                "<verification>Output is missing the <solution> tag and must be fixed by Reviser.</verification>\n"
                 "<verified_lemmas>NONE</verified_lemmas>\n"
                 "<citation_review>NONE</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod
@@ -246,9 +246,58 @@ def test_verifier_handles_candidate_without_solution_tag() -> None:
     assert "<citation_review>NONE</citation_review>" in full_text
 
 
+def test_verifier_contract_failure_degrades_to_minor_flaw() -> None:
+    class _FakeVerifierLLM:
+        def __init__(self):
+            self.phase3_calls = 0
+
+        def chat(self, messages, thinking=True, stream_prefix=None):
+            if stream_prefix == "VERIFIER-P1":
+                return _Resp("phase1")
+            self.phase3_calls += 1
+            # 持续返回无效格式，触发 verifier 内部降级逻辑。
+            return _Resp("invalid verifier output")
+
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+            return _Resp("phase2")
+
+        @staticmethod
+        def clear_reasoning_content(messages):
+            return
+
+    agent = VerifierAgent(
+        llm_client=_FakeVerifierLLM(),
+        prompts={
+            "verifier": {
+                "system": "sys",
+                "phase1_user": "p1",
+                "phase2_user": "p2",
+                "phase3_user": "p3",
+            }
+        },
+        tools=[],
+        tool_executor=lambda function_name, arguments: "",
+    )
+
+    full_text, decision, verification_report, _, _ = agent.run(
+        problem_text="demo",
+        proof_text="<solution>x</solution>",
+    )
+
+    assert decision == VerificationDecision.MINOR_FLAW
+    assert "contract validation failed" in verification_report
+    assert "<verdict>MINOR_FLAW</verdict>" in full_text
+    assert "<citation_review>" in full_text
+
+
 def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
     class _Pipeline:
-        def call_generator(self, problem_text: str, lesson: str | None = None):
+        def call_generator(
+            self,
+            problem_text: str,
+            lesson: str | None = None,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp("<solution>draft</solution>")
 
         def call_verifier(self, problem_text: str, proof_text: str):
@@ -263,11 +312,17 @@ def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
                 "phase1",
             )
 
-        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        def call_reviser(
+            self,
+            problem_text: str,
+            previous_solution: str,
+            verification_report: str,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp(previous_solution)
 
         def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
-            return RunStatus.PARTIAL.value, "", current_solution, ""
+            return "PROGRESS", "", current_solution, ""
 
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
@@ -280,7 +335,7 @@ def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
     state = ProofState(problem_id="p-verifier", problem_text="demo")
 
     out = orchestrator.run(state)
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
 
     lemma_file = runs_root / "p-verifier" / "artifact" / "lemmas" / "001.md"
     assert lemma_file.exists()
@@ -345,7 +400,7 @@ def test_base_agent_clears_stage_memory_after_each_run() -> None:
             self.inputs = []
 
         def chat(self, messages, thinking=True, stream_prefix=None):
-            # 记录每次进入模型时的输入消息，确保没有跨 run 污染。
+            # 璁板綍姣忔杩涘叆妯″瀷鏃剁殑杈撳叆娑堟伅锛岀‘淇濇病鏈夎法 run 姹℃煋銆?
             self.inputs.append([dict(item) for item in messages])
             return _Resp("ok")
 
@@ -373,7 +428,12 @@ def test_reviser_reasoning_not_persisted_in_history(tmp_path: Path) -> None:
         def __init__(self):
             self.verifier_calls = 0
 
-        def call_generator(self, problem_text: str, lesson: str | None = None):
+        def call_generator(
+            self,
+            problem_text: str,
+            lesson: str | None = None,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp("<solution>draft</solution>", reasoning_content="gen-think")
 
         def call_verifier(self, problem_text: str, proof_text: str):
@@ -400,11 +460,17 @@ def test_reviser_reasoning_not_persisted_in_history(tmp_path: Path) -> None:
                 "phase1",
             )
 
-        def call_reviser(self, problem_text: str, previous_solution: str, verification_report: str):
+        def call_reviser(
+            self,
+            problem_text: str,
+            previous_solution: str,
+            verification_report: str,
+            lemma_context_items: list[str] | None = None,
+        ):
             return _Resp("<solution>revised</solution>", reasoning_content="rev-think-should-not-log")
 
         def call_final(self, problem_text: str, current_solution: str, last_verifier_decision: str, last_verification_report: str):
-            return RunStatus.PARTIAL.value, "", current_solution, ""
+            return "PROGRESS", "", current_solution, ""
 
     runs_root = tmp_path / "runs"
     orchestrator = Orchestrator(
@@ -417,16 +483,17 @@ def test_reviser_reasoning_not_persisted_in_history(tmp_path: Path) -> None:
     state = ProofState(problem_id="p-reviser-no-reason", problem_text="demo")
 
     out = orchestrator.run(state)
-    assert out.status == RunStatus.SUCCESS
+    assert out.status == "SUCCESS"
 
     history_path = runs_root / "p-reviser-no-reason" / "history.jsonl"
     lines = [line.strip() for line in history_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     events = [json.loads(line) for line in lines]
 
-    reviser_events = [item for item in events if item.get("agent_node") == "REVISER"]
+    reviser_events = [item for item in events if item.get("node") == "REVISER"]
     assert len(reviser_events) == 1
     assert "reasoning_content" not in reviser_events[0]
 
-    generator_events = [item for item in events if item.get("agent_node") == "GENERATOR"]
+    generator_events = [item for item in events if item.get("node") == "GENERATOR"]
     assert len(generator_events) >= 1
     assert "reasoning_content" in generator_events[0]
+

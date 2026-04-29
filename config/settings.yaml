@@ -1,10 +1,10 @@
-provider: "${LLM_PROVIDER}"   # "deepseek" 或 "volcano"(火山方舟引擎, 默认)
+provider: "${LLM_PROVIDER}"   # "deepseek" 或 "volcano"
 
 llm_defaults:
   thinking: true
   max_tokens: 16384
   connect_timeout_seconds: 30
-  # Deepseek V3.2 在复杂 IMO 题上首包可能较慢，读写超时不宜过短。
+  # 例如 DeepSeek V3.2 在复杂 IMO 题上首包可能较慢，读写超时不宜过短。
   read_timeout_seconds: 600
   write_timeout_seconds: 600
   pool_timeout_seconds: 30
@@ -43,10 +43,7 @@ resilience:
   llm_retry_max_attempts: 3
   tool_retry_max_attempts: 2
   tool_retry_backoff_seconds: 0.2
-  default_max_tool_rounds: 5
-  generator_max_tool_rounds: 5
-  reviser_max_tool_rounds: 5
-  verifier_max_tool_rounds: 5
+  max_tool_rounds: 20
   tool_timeout_seconds: 30
 
 retrieval:

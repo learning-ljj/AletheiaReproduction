@@ -25,7 +25,7 @@ class _FakeLLMClient:
         self.chat_message_snapshots.append([dict(m) for m in messages])
         return _Resp(content="plain-result", reasoning_content="plain-reason")
 
-    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=10, stream_prefix=None):
+    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=20, stream_prefix=None):
         self.chat_with_tools_calls += 1
         self.last_max_tool_rounds = max_tool_rounds
         self.chat_with_tools_message_snapshots.append([dict(m) for m in messages])

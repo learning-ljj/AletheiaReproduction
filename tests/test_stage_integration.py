@@ -21,7 +21,7 @@ class _FakeLLMGeneratorWithSearcher:
     def chat(self, messages, thinking=True, stream_prefix=None):
         return _Resp("<verdict>PARTIAL</verdict>\n<solution>fallback</solution>")
 
-    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=10, stream_prefix=None):
+    def chat_with_tools(self, messages, tools, tool_executor, max_tool_rounds=20, stream_prefix=None):
         self.last_tool_payload = tool_executor("call_searcher", {"query": "compactness theorem"})
         return _Resp(
             "<verdict>PARTIAL</verdict>\n"
@@ -87,7 +87,7 @@ def test_verifier_citation_reviewer_stage_integration(tmp_path: Path) -> None:
                 "<verified_lemmas>NONE</verified_lemmas>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=10):
+        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
             return _Resp("phase2")
 
         @staticmethod

@@ -292,24 +292,6 @@ def multi_source_search_with_diagnostics(
     }
 
 
-def multi_source_search(
-    queries: list[str],
-    source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None,
-    limit_per_query: int = 10,
-    retry_attempts: int = 2,
-    retry_backoff_seconds: float = 0.2,
-) -> list[dict]:
-    """兼容旧调用：仅返回结果列表，不暴露诊断字段。"""
-    diagnostics = multi_source_search_with_diagnostics(
-        queries,
-        source_handlers=source_handlers,
-        limit_per_query=limit_per_query,
-        retry_attempts=retry_attempts,
-        retry_backoff_seconds=retry_backoff_seconds,
-    )
-    return diagnostics["results"]
-
-
 def build_paper_filename(paper: dict) -> str:
     # 文件名优先用强身份（DOI/arXiv），找不到再退化到标题。
     doi = (paper.get("doi") or "").strip()

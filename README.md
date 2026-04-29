@@ -12,7 +12,7 @@
 Generator => Verifier (3-phase) => Reviser / Generator => ...
 ```
 
-This repository reimplements the core pipeline in Python with an OpenAI-compatible client, targeting the DeepSeek V3.2 model (via DeepSeek official API or Volcano Engine).
+This repository reimplements the core pipeline in Python with an OpenAI-compatible client, targeting provider models (e.g. DeepSeek V3.2) via supported providers such as DeepSeek official API or Volcano Engine.
 
 ---
 
@@ -124,7 +124,7 @@ copy .env.example .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `LLM_PROVIDER` | Yes | `deepseek` or `volcano` |
+| `LLM_PROVIDER` | Yes | provider name (e.g. `deepseek` or `volcano`) |
 | `DEEPSEEK_API_KEY` | if deepseek | DeepSeek platform API key |
 | `VOLCANO_API_KEY` | if volcano | Volcano Engine API key |
 | `VOLCANO_BASE_URL` | if volcano | e.g. `https://ark.cn-beijing.volces.com/api/v3` |
@@ -203,7 +203,7 @@ This project is a **derivative work** based on [Aletheia](https://github.com/goo
 Key differences from the original:
 
 - Implemented in Python with an OpenAI-compatible API client
-- Supports DeepSeek V3.2 interleaved thinking (reasoning_content + content)
+- Supports interleaved thinking protocol (reasoning_content + content), e.g. DeepSeek V3.2
 - Extended tool registry: Searcher/CitationReviewer bridges and layered artifact reading
 - JSONL structured logging with offline WorklogBuilder markdown generation
 - CLI (main.py) and batch benchmark runner (run_imobench.py)
