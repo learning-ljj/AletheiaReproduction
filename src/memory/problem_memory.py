@@ -194,8 +194,8 @@ class ProblemMemory:
         return len(self._initial_lemma_paths)
 
     @staticmethod
-    def _summary_from_frontmatter(text: str) -> str | None:
-        """从 YAML frontmatter 提取 summary 字段，若没有则返回 None。"""
+    def _title_from_frontmatter(text: str) -> str | None:
+        """从 YAML frontmatter 提取 title 字段，若没有则尝试提取 summary 字段。"""
         stripped = (text or "").lstrip()
         if not stripped.startswith("---"):
             return None
@@ -211,7 +211,8 @@ class ProblemMemory:
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            if key.strip().lower() == "summary":
+            key_lower = key.strip().lower()
+            if key_lower == "title" or key_lower == "summary":
                 return value.strip()
         return None
 
@@ -230,11 +231,11 @@ class ProblemMemory:
         内容应为以下三种格式之一：
         1. 完整三层 Markdown（推荐，含 YAML 头部）。
         2. 仅有 YAML 头部与证明。
-        3. 纯文本（无 YAML 头部），此时自动生成 summary 及默认元数据。
+        3. 纯文本（无 YAML 头部），此时自动生成 title 及默认元数据。
 
-        文件名根据 YAML 中的 summary 字段生成，若缺失则尝试用第一行非空文本，
+        文件名根据 YAML 中的 title 字段生成，若缺失则尝试用第一行非空文本，
         若仍无法提取有意义文字，则使用内容哈希作为文件名（以保证稳定性）。
-        若文件名冲突（相同 summary 但不同内容），自动追加 _2, _3 等编号并记录警告。
+        若文件名冲突（相同 title 但不同内容），自动追加 _2, _3 等编号并记录警告。
         内容完全相同的引理不会被重复写入。
         """
         self.init_dirs()
@@ -245,11 +246,11 @@ class ProblemMemory:
             return existing
 
         # 2) 确定一个有意义且安全的文件名
-        summary = self._summary_from_frontmatter(content)
-        if not summary:
-            summary = self._first_non_empty_line(content)
+        title = self._title_from_frontmatter(content)
+        if not title:
+            title = self._first_non_empty_line(content)
 
-        desired_name = self._slugify_filename(summary) if summary else None
+        desired_name = self._slugify_filename(title) if title else None
         if not desired_name:
             # 无法提取任何可读文字时，用内容哈希生成稳定文件名
             hash_hex = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
@@ -330,15 +331,15 @@ class ProblemMemory:
                     text = path.read_text(encoding="utf-8")
                 except OSError:
                     continue
-                # 优先 frontmatter summary，其次首行
-                summary = (
-                    self._summary_from_frontmatter(text)
+                # 优先 frontmatter title，其次首行
+                title = (
+                    self._title_from_frontmatter(text)
                     or self._first_non_empty_line(text)
                 )
-                if not summary:
+                if not title:
                     continue
                 relative = path.relative_to(self.run_dir).as_posix()
-                out.append(f"{summary} [path:{relative}]")
+                out.append(f"{title} [path:{relative}]")
                 if len(out) >= max(0, limit):
                     return out
         return out
@@ -348,11 +349,11 @@ class ProblemMemory:
     # ═════════════════════════════════════════════════════════════
     def add_paper(self, content: str, filename: str | None = None) -> Path:
         """添加一篇论文工件。"""
-        # 若未提供文件名，用同样的 summary 提取 + 冲突处理逻辑
+        # 若未提供文件名，用同样的 title 提取 + 冲突处理逻辑
         if filename is None:
-            summary = self._summary_from_frontmatter(content) or self._first_non_empty_line(content)
-            if summary:
-                base = self._slugify_filename(summary)
+            title = self._title_from_frontmatter(content) or self._first_non_empty_line(content)
+            if title:
+                base = self._slugify_filename(title)
                 if base:
                     desired = f"{base}.md"
                     filename = self._resolve_filename_collision_in_dir(self.papers_dir, desired)

@@ -15,13 +15,13 @@ from src.tools.registry import (
     format_tool_error,
     get_tool_schemas,
 )
-from src.tools.search_sources import build_default_source_handlers
+from src.tools.search_papers.search_sources import build_default_source_handlers
 
 
 _AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "generator": {"read_artifact_layer", "call_searcher"},
-    "reviser": {"read_artifact_layer", "call_searcher"},
-    "verifier": {"run_python", "read_artifact_layer", "call_citation_reviewer"},
+    "generator": {"read_artifact", "call_searcher"},
+    "reviser": {"read_artifact", "call_searcher"},
+    "verifier": {"run_python", "read_artifact", "call_citation_reviewer"},
 }
 
 

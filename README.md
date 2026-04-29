@@ -76,7 +76,7 @@ Problem Text
     |
     v
 [VERIFIER]   Phase 1 - read & plan
-             Phase 2 - tool calls (run_python / call_searcher / read_artifact_layer / call_citation_reviewer)
+             Phase 2 - tool calls (run_python / call_searcher / read_artifact / call_citation_reviewer)
              Phase 3 - verdict [DECISION]
     |
 +---+--------------------+-------------------+
@@ -176,7 +176,7 @@ python scripts/run_imobench.py --dataset answerbench --count 10 --max-turns 3
 |---|---|
 | `run_python` | Execute Python code in a subprocess sandbox (sympy, numpy, scipy available) |
 | `call_searcher` | Trigger Searcher sub-agent retrieval chain and persist layered paper artifacts |
-| `read_artifact_layer` | Read one layer (frontmatter/body/source) from an artifact markdown file |
+| `read_artifact` | Read one layer (frontmatter/body/source) from an artifact markdown file |
 | `call_citation_reviewer` | Review citation path existence and claim-source consistency |
 
 ---

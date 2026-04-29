@@ -105,12 +105,11 @@ class FinalizerEngine:
         elif progress and solution_text:
             # 有进展但未完成：展示解答 + 状态提示
             base = (
-                (solution_text or "").strip()
-                + f"\n\nStatus: PROGRESS (max turns exhausted)."
+                f"**Status**: PROGRESS\n**Failure Reason**: {reason}\n\n"
+                + (solution_text or "").strip()
             )
         else:
-            base = f"Admits failure: {reason}."
-
+            base = f"**Status**: FAILED\n**Failure Reason**: {reason}\n\n"
         output = base.strip()
 
         if references:

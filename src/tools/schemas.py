@@ -54,14 +54,14 @@ _TOOL_SCHEMAS: list[dict] = [
                         "description": "Optional expanded retrieval queries.",
                     }
                 },
-                "required": [],
+                "required": ["query", "query_bundle"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "read_artifact_layer",
+            "name": "read_artifact",
             "description": (
                 "Read one specific layer from an artifact markdown file under runs/{problem_id}/artifact. "
                 "layer=1 reads YAML frontmatter summary, layer=2 reads Layer2 body, "

@@ -9,7 +9,7 @@ from typing import Callable
 from src.agents.citation_reviewer import CitationReviewerAgent
 from src.memory.state import VerificationDecision
 from src.memory.problem_memory import get_current_problem_memory
-from src.tools.envelope import extract_tool_success_data, parse_tool_payload
+from src.tools.format import extract_tool_success_data, parse_tool_payload
 from src.utils.parsing.parser import (
     extract_xml_tag,
     parse_citations_with_claim_spans,
@@ -181,7 +181,7 @@ class VerifierAgent:
             }
         )
 
-        # Phase2 负责工具验证（run_python / read_artifact_layer / call_citation_reviewer）。
+        # Phase2 负责工具验证（run_python / read_artifact / call_citation_reviewer）。
         phase2_prompt = self.prompts["verifier"]["phase2_user"] + self._build_citation_phase2_prompt(cites, claim_spans)
         messages.append({"role": "user", "content": phase2_prompt})
         phase2_resp = self.llm_client.chat_with_tools(

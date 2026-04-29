@@ -31,7 +31,7 @@ generator:
     每个 `<lemma>` 块按以下格式组织：
     <lemma>
     ---
-    summary: 一句话描述结论
+    title: 用自然语言一句话描述结论
     conditions:
       - 条件1
       - 条件2
@@ -40,7 +40,7 @@ generator:
     ---
     证明过程（完整推导）
     </lemma>
-    * summary、conditions、conclusion 必须填写。
+    * title、conditions、conclusion 必须填写。
     * 如果你没有发现可复用的引理，则无需输出 `<lemma>`。
 
     接下来使用 Step N / Lemma N / Claim N 组织结构；为稍后被引用的关键公式或方程编号为 (N)。只写完整、逐步、可验证的数学解答正文，不允许跳过关键推导。细节必须足以让专家逐步检查正确性，而无需自行填补漏洞。此部分**只能包含**正式解答，不得出现内部评论、替代方法或失败尝试。

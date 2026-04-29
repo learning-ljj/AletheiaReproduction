@@ -5,9 +5,9 @@ from typing import Callable
 from src.agents.citation_reviewer import CitationReviewerAgent
 from src.agents.searcher import SearcherAgent
 from src.memory.problem_memory import get_current_problem_memory
-from src.tools.artifact_reader import read_artifact_layer
+from src.tools.artifact_reader import read_artifact
 from src.tools.code_executor import run_python
-from src.tools.envelope import (
+from src.tools.format import (
     format_tool_error,
     format_tool_success,
 )
@@ -99,9 +99,9 @@ def _format_call_searcher(
     return format_tool_success(tool="call_searcher", data=payload)
 
 
-def _format_read_artifact_layer(path: str, layer: int) -> str:
+def _format_read_artifact(path: str, layer: int) -> str:
     """按层读取 artifact 文档（artifact_reader 内部已统一包络）。"""
-    return read_artifact_layer(path=path, layer=layer)
+    return read_artifact(path=path, layer=layer)
 
 
 def _format_call_citation_reviewer(
@@ -142,7 +142,7 @@ def _format_call_citation_reviewer(
 _TOOL_MAP: dict = {
     "run_python": _format_run_python,
     "call_searcher": _format_call_searcher,
-    "read_artifact_layer": _format_read_artifact_layer,
+    "read_artifact": _format_read_artifact,
     "call_citation_reviewer": _format_call_citation_reviewer,
 }
 

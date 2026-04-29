@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Callable
 
 from src.memory.problem_memory import ProblemMemory
-from src.tools.search import (
+from src.tools.search_papers.search import (
     build_paper_filename,
     build_paper_markdown,
     dedup_papers,
