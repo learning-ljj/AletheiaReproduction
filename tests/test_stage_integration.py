@@ -109,9 +109,9 @@ def test_verifier_citation_reviewer_stage_integration(tmp_path: Path) -> None:
     )
 
     proof_text = "<solution>claim [cite:artifact/papers/demo.md]</solution>"
-    full_text, _, _, _, _ = verifier.run(problem_text="demo", proof_text=proof_text)
+    verifier_response, tool_trace, preliminary_analysis = verifier.run(problem_text="demo", proof_text=proof_text)
 
-    review_payload = json.loads(extract_xml_tag(full_text, "citation_review"))
+    review_payload = json.loads(extract_xml_tag(verifier_response, "citation_review"))
     assert review_payload["fail_count"] == 0
     assert review_payload["items"][0]["passed"] is True
 

@@ -1,6 +1,7 @@
 """Aletheia CLI 入口：接受数学问题并运行 Generator→Verifier→Reviser 迭代精炼循环。"""
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime
@@ -12,10 +13,9 @@ load_dotenv()
 
 from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
-from src.memory.state import RunStatus
-from src.utils.evaluation.data_loader import lookup_ground_truth
-from src.utils.logging.raw_log_reader import resolve_run_artifact_path, resolve_run_log_path
-from src.utils.logging.worklog_builder import WorklogBuilder
+from src.memory.state import RunStatus, ProblemSnapshot, collect_and_generate_error_summary
+from evaluation.data_loader import lookup_ground_truth
+from src.utils.logging.worklog import WorklogBuilder, resolve_run_artifact_path, resolve_run_log_path
 
 
 def _configure_stdio_utf8() -> None:
@@ -144,6 +144,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n>>> Solve error: {exc}", file=sys.stderr)
 
     # ── 输出结果 ──
+    # 收集并生成错误汇总
+    error_summary = None
+    if state is not None:
+        # 重新读取state.json并生成错误汇总
+        run_dir = runs_root / run_id
+        state_path = run_dir / "state.json"
+        if state_path.exists():
+            try:
+                data = json.loads(state_path.read_text(encoding="utf-8"))
+                state_snapshot = ProblemSnapshot.from_dict(data)
+                error_summary = collect_and_generate_error_summary(state_snapshot)
+                # 保存更新后的state
+                if error_summary or state_snapshot.error_summary:
+                    updated_data = json.dumps(state_snapshot.to_dict(), ensure_ascii=False, indent=2)
+                    tmp_path = state_path.parent / f".{state_path.name}.tmp"
+                    tmp_path.write_text(updated_data + "\n", encoding="utf-8")
+                    tmp_path.replace(state_path)
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning(f"Failed to process error summary: {exc}")
+    
     if state is not None:
         print("\n" + "=" * 70)
         print(f">>> Iterations: {state.iteration_count}")
@@ -155,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
             reason = state.failure_reason or "unknown"
             print(f">>> Result: FAILED ({reason})")
         print("=" * 70)
+
+        # 若有错误汇总，先打印在最醒目的位置
+        if error_summary:
+            print("\n⚠️  运行错误摘要:")
+            print(error_summary)
+            print()
 
         if state.final_output:
             print("\n" + state.final_output)

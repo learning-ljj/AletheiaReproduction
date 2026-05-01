@@ -2,7 +2,7 @@
 
 # 这里定义的是“给模型看的工具说明书”，不是工具实现本身。
 # 模型会根据 name/description/parameters 生成 tool_calls，
-# 真实执行由 src/tools/registry.py 的 execute_tool 完成。
+# 真实执行由 src/tools/registry.py 的 ToolExecutor 完成。
 _TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
@@ -36,7 +36,7 @@ _TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "call_searcher",
             "description": (
-                "Bridge call to SearcherAgent full retrieval chain. "
+                "Bridge call to SearchPipelne full retrieval chain. "
                 "Use this whenever external knowledge retrieval is required. "
                 "Searcher executes query expansion, multi-source retrieval, dedup, candidate-claim extraction, "
                 "and persists layered markdown artifacts under runs/{problem_id}/artifact/papers."
@@ -86,10 +86,11 @@ _TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "call_citation_reviewer",
+            "name": "review_citation",
             "description": (
-                "Trigger CitationReviewerAgent to validate cite path existence and claim-source semantic support. "
-                "Use this in verifier stage when [cite:path] markers are detected in the candidate solution."
+                "Validate whether citation file paths exist on disk and return the full text of each referenced file. "
+                "Use this in verifier stage when [cite:path] markers are detected in the candidate solution. "
+                "The verifier shuould compare the solution text against the returned file contents and decide whether the citation is valid or hallucinated."
             ),
             "parameters": {
                 "type": "object",
@@ -98,11 +99,6 @@ _TOOL_SCHEMAS: list[dict] = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Citation paths extracted from [cite:path] markers.",
-                    },
-                    "claim_spans": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Sentence-level claim spans aligned with cites by index.",
                     },
                 },
                 "required": ["cites"],
@@ -113,6 +109,6 @@ _TOOL_SCHEMAS: list[dict] = [
 
 
 def get_tool_schemas() -> list[dict]:
-    """Return tool schema list in OpenAI function-calling format."""
+    """返回 OpenAI function calling 格式的 tools 列表。"""
     # 直接返回静态 schema 列表，调用侧不要原地修改该对象。
     return _TOOL_SCHEMAS

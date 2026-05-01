@@ -3,10 +3,10 @@ import json
 from src.core.agent import (
     _AGENT_TOOL_ALLOWLIST,
     AgentPipeline,
-    _build_scoped_tool_executor,
+    ScopedToolExecutor,
     _filter_tool_schemas,
 )
-from src.tools.registry import execute_tool
+from src.tools.registry import ToolExecutor
 
 
 class _DummyLLM:
@@ -28,12 +28,12 @@ def test_filter_tool_schemas_by_allowlist() -> None:
     schemas = [
         _schema("run_python"),
         _schema("call_searcher"),
-        _schema("read_artifact_layer"),
+        _schema("read_artifact"),
         _schema("call_citation_reviewer"),
     ]
-    filtered = _filter_tool_schemas(schemas, {"run_python", "read_artifact_layer"})
+    filtered = _filter_tool_schemas(schemas, {"run_python", "read_artifact"})
 
-    assert [item["function"]["name"] for item in filtered] == ["run_python", "read_artifact_layer"]
+    assert [item["function"]["name"] for item in filtered] == ["run_python", "read_artifact"]
 
 
 def test_scoped_tool_executor_blocks_disallowed_calls() -> None:
@@ -43,7 +43,7 @@ def test_scoped_tool_executor_blocks_disallowed_calls() -> None:
         calls.append((function_name, arguments))
         return "ok"
 
-    scoped = _build_scoped_tool_executor(_base, {"run_python"})
+    scoped = ScopedToolExecutor(_base, {"run_python"})
     blocked = scoped("call_searcher", {"query": "demo"})
     allowed = scoped("run_python", {"code": "print(1)"})
 
@@ -56,7 +56,7 @@ def test_agent_runtime_uses_stage_tool_allowlists() -> None:
     schemas = [
         _schema("run_python"),
         _schema("call_searcher"),
-        _schema("read_artifact_layer"),
+        _schema("read_artifact"),
         _schema("call_citation_reviewer"),
     ]
     prompts = {
@@ -87,7 +87,7 @@ def test_agent_runtime_uses_stage_tool_allowlists() -> None:
 
 
 def test_execute_tool_unknown_returns_structured_error() -> None:
-    payload = json.loads(execute_tool("__unknown_tool__", {}))
+    payload = json.loads(ToolExecutor()("__unknown_tool__", {}))
     assert payload["status"] == "ERROR"
     assert payload["error"]["error_code"] == "UNKNOWN_TOOL"
     assert payload["error"]["retryable"] is False

@@ -1,4 +1,4 @@
-"""Searcher 子代理实现。
+"""Searcher 实现
 
 核心职责（按执行顺序）：
 1) 扩展查询；
@@ -22,8 +22,10 @@ from src.tools.search_papers.search import (
 )
 
 
-class SearcherAgent:
+class SearchPipelne:
     """Stable retrieval chain: expand -> multi-source -> dedup -> summarize -> persist."""
+
+    _MAX_RESULTS_PER_SOURCE = 10
 
     def __init__(
         self,
@@ -47,6 +49,7 @@ class SearcherAgent:
             expanded_queries,
             source_handlers=self.source_handlers,
             limit_per_query=self.limit_per_query,
+            max_results_per_source=self._MAX_RESULTS_PER_SOURCE,
         )
         raw_hits = search_diagnostics.get("results", [])
         search_errors = search_diagnostics.get("errors", [])

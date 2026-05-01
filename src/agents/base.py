@@ -13,7 +13,7 @@ class BaseAgent:
 
     - Keeps stage-local message history in self.messages.
     - Resets memory at the start of each run.
-    - Supports optional tool loop via llm_client.chat_with_tools with max_tool_rounds.
+    - Supports optional tool loop via llm_client.chat_with_tools with max_rounds.
     """
 
     def __init__(
@@ -23,14 +23,14 @@ class BaseAgent:
         system_prompt: str,
         tools: list[dict] | None = None,
         tool_executor: Callable[[str, dict], str] | None = None,
-        max_tool_rounds: int = 20,
+        max_rounds: int = 20,
         stream_prefix: str | None = None,
     ):
         self.llm_client = llm_client
         self.system_prompt = system_prompt
         self.tools = tools or []
         self.tool_executor = tool_executor
-        self.max_tool_rounds = max_tool_rounds
+        self.max_rounds = max_rounds
         self.stream_prefix = stream_prefix
         self.messages: list[dict] = []
 
@@ -71,7 +71,7 @@ class BaseAgent:
                     self.messages,
                     self.tools,
                     self.tool_executor,
-                    max_tool_rounds=self.max_tool_rounds,
+                    max_rounds=self.max_rounds,
                     stream_prefix=self.stream_prefix,
                 )
             else:

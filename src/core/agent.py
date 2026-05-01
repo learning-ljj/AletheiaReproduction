@@ -10,18 +10,19 @@ from src.memory.state import ProofState
 from src.models.llm_client import _UNSET as _STREAM_UNSET
 from src.models.llm_client import create_llm_client
 from src.tools.registry import (
-    configure_searcher_sources,
-    execute_tool,
     format_tool_error,
-    get_tool_schemas,
+    ToolExecutor,
 )
-from src.tools.search_papers.search_sources import build_default_source_handlers
+from src.tools.schemas import get_tool_schemas
+from src.tools.search_papers.search_sources import build_search_source_handlers
 
 
 _AGENT_TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "generator": {"read_artifact", "call_searcher"},
-    "reviser": {"read_artifact", "call_searcher"},
-    "verifier": {"run_python", "read_artifact", "call_citation_reviewer"},
+    # "generator": {"read_artifact", "call_searcher"},
+    # "reviser": {"read_artifact", "call_searcher"},
+    "generator": {"read_artifact"},
+    "reviser": {"read_artifact"},
+    "verifier": {"run_python", "read_artifact", "review_citation"},
 }
 
 
@@ -35,15 +36,16 @@ def _filter_tool_schemas(tool_schemas: list[dict], allowed_names: set[str]) -> l
     return filtered
 
 
-def _build_scoped_tool_executor(
-    base_executor: Callable[[str, dict], str],
-    allowed_names: set[str],
-) -> Callable[[str, dict], str]:
-    """构造仅允许白名单工具的执行器。"""
+class ScopedToolExecutor:
+    """带工具白名单的执行器，避免使用函数嵌套工厂。"""
 
-    def _executor(function_name: str, arguments: dict) -> str:
-        if function_name not in allowed_names:
-            allowed_list = sorted(allowed_names)
+    def __init__(self, base_executor: Callable[[str, dict], str], allowed_names: set[str]):
+        self.base_executor = base_executor
+        self.allowed_names = set(allowed_names)
+
+    def __call__(self, function_name: str, arguments: dict) -> str:
+        if function_name not in self.allowed_names:
+            allowed_list = sorted(self.allowed_names)
             return format_tool_error(
                 tool=function_name,
                 error_code="TOOL_NOT_PERMITTED_IN_STAGE",
@@ -54,9 +56,7 @@ def _build_scoped_tool_executor(
                 retryable=False,
                 detail={"allowed": allowed_list},
             )
-        return base_executor(function_name, arguments)
-
-    return _executor
+        return self.base_executor(function_name, arguments)
 
 
 class AgentPipeline:
@@ -69,7 +69,7 @@ class AgentPipeline:
         tool_schemas,
         tool_executor,
         *,
-        max_tool_rounds: int = 20,
+        max_rounds: int = 20,
     ):
         self.llm_client = llm_client
         self.prompts = prompts
@@ -82,71 +82,36 @@ class AgentPipeline:
         reviser_tools = _filter_tool_schemas(tool_schemas, reviser_allowed)
         verifier_tools = _filter_tool_schemas(tool_schemas, verifier_allowed)
 
-        generator_executor = _build_scoped_tool_executor(tool_executor, generator_allowed)
-        reviser_executor = _build_scoped_tool_executor(tool_executor, reviser_allowed)
-        verifier_executor = _build_scoped_tool_executor(tool_executor, verifier_allowed)
+        generator_executor = ScopedToolExecutor(tool_executor, generator_allowed)
+        reviser_executor = ScopedToolExecutor(tool_executor, reviser_allowed)
+        verifier_executor = ScopedToolExecutor(tool_executor, verifier_allowed)
 
         self.generator_agent = GeneratorAgent(
             llm_client=self.llm_client,
             system_prompt=self.prompts["generator"]["system"],
             tools=generator_tools,
             tool_executor=generator_executor,
-            max_tool_rounds=max_tool_rounds,
+            max_rounds=max_rounds,
         )
         self.verifier_agent = VerifierAgent(
             llm_client=self.llm_client,
             prompts=self.prompts,
             tools=verifier_tools,
             tool_executor=verifier_executor,
-            max_tool_rounds=max_tool_rounds,
+            max_rounds=max_rounds,
         )
         self.reviser_agent = ReviserAgent(
             llm_client=self.llm_client,
             system_prompt=self.prompts["reviser"]["system"],
             tools=reviser_tools,
             tool_executor=reviser_executor,
-            max_tool_rounds=max_tool_rounds,
-        )
-
-    def call_generator(
-        self,
-        problem_text: str,
-        lesson: str | None = None,
-        lemma_context_items: list[str] | None = None,
-    ):
-        # GeneratorAgent 对象执行。
-        return self.generator_agent.run(
-            problem_text=problem_text,
-            error_lessons=lesson,
-            lemma_context_items=lemma_context_items,
-        )
-
-    def call_verifier(self, problem_text: str, proof_text: str):
-        # VerifierAgent 对象执行。
-        return self.verifier_agent.run(
-            problem_text=problem_text,
-            proof_text=proof_text,
-        )
-
-    def call_reviser(
-        self,
-        problem_text: str,
-        previous_solution: str,
-        verification_report: str,
-        lemma_context_items: list[str] | None = None,
-    ):
-        # ReviserAgent 对象执行。
-        return self.reviser_agent.run(
-            problem_text=problem_text,
-            previous_solution=previous_solution,
-            verification_report=verification_report,
-            lemma_context_items=lemma_context_items,
+            max_rounds=max_rounds,
         )
 
 
 def _resolve_tool_round_limits(config: dict) -> int:
     resilience_cfg = config.get("resilience", {}) if isinstance(config, dict) else {}
-    return int(resilience_cfg.get("max_tool_rounds", 20))
+    return int(resilience_cfg.get("max_rounds", 20))
 
 
 class AletheiaAgent:
@@ -162,16 +127,18 @@ class AletheiaAgent:
         self.max_turns = int(agent_cfg.get("max_turns", 5))
         self.runs_root = str(agent_cfg.get("runs_root", "runs"))
 
-        configure_searcher_sources(build_default_source_handlers(config))
+        search_source_handlers = build_search_source_handlers(config)
         tool_schemas = get_tool_schemas()
         rounds = _resolve_tool_round_limits(config)
+
+        tool_executor = ToolExecutor(search_source_handlers)
 
         pipeline = AgentPipeline(
             self.llm_client,
             prompts,
             tool_schemas,
-            execute_tool,
-            max_tool_rounds=rounds,
+            tool_executor,
+            max_rounds=rounds,
         )
         self.orchestrator = Orchestrator(
             max_turns=self.max_turns,

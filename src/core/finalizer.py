@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
-from src.memory.state import ProofState, RunStatus, VerificationDecision, ProblemSnapshot
+from src.memory.state import ProofState, RunStatus, VerificationDecision, ProblemSnapshot, StageSnapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -55,10 +55,7 @@ class FinalizerEngine:
         if self.problem_memory is None or not (solution_text or "").strip():
             return solution_text, [], []
 
-        from src.utils.parsing.reference_builder import (
-            build_references,
-            export_references_bibtex,
-        )
+        from src.utils.parsing.build_reference import build_references, references_to_bibtex
 
         try:
             converted, references, missing = build_references(
@@ -66,7 +63,7 @@ class FinalizerEngine:
             )
             if references:
                 try:
-                    export_references_bibtex(references, self.problem_memory)
+                    self.problem_memory.save_bibtex(references_to_bibtex(references))
                 except Exception as exc:
                     missing.append(
                         f"bibtex_export_error: {type(exc).__name__}: {exc}"
@@ -76,7 +73,7 @@ class FinalizerEngine:
             return (
                 solution_text,
                 [],
-                [f"reference_builder_error: {type(exc).__name__}: {exc}"],
+                [f"build_reference_error: {type(exc).__name__}: {exc}"],
             )
 
     def _build_final_output(
@@ -85,6 +82,7 @@ class FinalizerEngine:
         success: bool,
         solution_text: str | None,
         failure_reason: str | None,
+        verifier_text: str | None = None,
         progress: bool = False,
         references: list[str] | None = None,
         warning_summary: str | None = None,
@@ -98,19 +96,29 @@ class FinalizerEngine:
         - 最后追加引用和警告段落（如存在）。
         """
         reason = (failure_reason or "unknown_reason").strip()
+        solution_body = (solution_text or "").strip()
+        verifier_body = (verifier_text or "").strip()
 
-        # 根据状态选择基础文本
-        if success:
-            base = (solution_text or "").strip()
-        elif progress and solution_text:
-            # 有进展但未完成：展示解答 + 状态提示
-            base = (
-                f"**Status**: PROGRESS\n**Failure Reason**: {reason}\n\n"
-                + (solution_text or "").strip()
-            )
-        else:
-            base = f"**Status**: FAILED\n**Failure Reason**: {reason}\n\n"
-        output = base.strip()
+        sections: list[str] = []
+
+        if not success:
+            if progress and solution_body:
+                sections.append(
+                    f"**Status**: PROGRESS\n**Failure Reason**: {reason}"
+                )
+            else:
+                sections.append(f"**Status**: FAILED\n**Failure Reason**: {reason}")
+
+        if verifier_body:
+            sections.append("## Last Verifier Output\n" + verifier_body)
+
+        if solution_body:
+            if verifier_body or not success:
+                sections.append("## Solution\n" + solution_body)
+            else:
+                sections.append(solution_body)
+
+        output = "\n\n".join(section.strip() for section in sections if section.strip())
 
         if references:
             output += "\n\n## References\n" + "\n".join(references)
@@ -129,6 +137,7 @@ class FinalizerEngine:
         *,
         success: bool,
         failure_reason: str | None,
+        verifier_text: str | None = None,
         progress: bool = False,
     ) -> tuple[str | None, list[str], str | None, str]:
         """处理引用、警告，生成最终输出文本。
@@ -144,6 +153,7 @@ class FinalizerEngine:
             success=success,
             solution_text=converted_solution,
             failure_reason=failure_reason,
+            verifier_text=verifier_text,
             progress=progress,
             references=references,
             warning_summary=warning_summary,
@@ -162,6 +172,7 @@ class FinalizerEngine:
         warning_summary: str | None,
         last_decision: VerificationDecision | None = None,
         extra_event: dict | None = None,
+        stages: list[StageSnapshot] | None = None,
     ) -> None:
         """将终态写入事件日志、状态快照、输出工件和清单。"""
         if self.problem_memory is None:
@@ -191,6 +202,7 @@ class FinalizerEngine:
             iteration_count=state.iteration_count,
             status=state.status.value if state.status else "RUNNING",
             last_decision=decision_value,
+            stages=list(stages or []),
         )
         self.problem_memory.save_state(snapshot)
 
@@ -246,12 +258,24 @@ class FinalizerEngine:
     # ------------------------------------------------------------------
     # 公共终态入口
     # ------------------------------------------------------------------
-    def finalize_success(self, state: ProofState, *, turn_id: int) -> ProofState:
+    def finalize_success(
+        self,
+        state: ProofState,
+        *,
+        turn_id: int,
+        last_verifier_text: str | None = None,
+        stages: list[StageSnapshot] | None = None,
+    ) -> ProofState:
         """处理 SUCCESS：解答被判定为完全正确。"""
         state.status = RunStatus.SUCCESS
         state.failure_reason = None
         converted_solution, references, warning_summary, state.final_output = (
-            self._compose(state, success=True, failure_reason=None)
+            self._compose(
+                state,
+                success=True,
+                failure_reason=None,
+                verifier_text=last_verifier_text,
+            )
         )
         state.final_answer = converted_solution
         self._persist(
@@ -260,6 +284,7 @@ class FinalizerEngine:
             references=references,
             warning_summary=warning_summary,
             last_decision=VerificationDecision.CORRECT,
+            stages=stages,
         )
         return state
 
@@ -267,7 +292,9 @@ class FinalizerEngine:
         self,
         state: ProofState,
         last_decision: VerificationDecision | None = None,
-        last_verification_report: str | None = None,
+        last_verification: str | None = None,
+        last_verifier_text: str | None = None,
+        stages: list[StageSnapshot] | None = None,
     ) -> ProofState:
         """处理耗尽但未通过：根据新增引理判定 PROGRESS 或 FAILED。"""
         new_lemma_count = (
@@ -287,6 +314,7 @@ class FinalizerEngine:
                 success=False,
                 failure_reason=state.failure_reason,
                 progress=has_progress,
+                verifier_text=last_verifier_text,
             )
         )
         state.final_answer = converted_solution if has_progress else None
@@ -297,7 +325,7 @@ class FinalizerEngine:
         )
         extra_event: dict[str, object] = {
             "last_verifier_decision": last_decision_value,
-            "last_verification_report": last_verification_report or "",
+            "last_verification": last_verification or "",
             "new_lemma_count": new_lemma_count,
         }
         if self.problem_memory is not None:
@@ -315,5 +343,6 @@ class FinalizerEngine:
             warning_summary=warning_summary,
             last_decision=last_decision,
             extra_event=extra_event,
+            stages=stages,
         )
         return state

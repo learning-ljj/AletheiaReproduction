@@ -35,8 +35,3 @@ class ContextBuilder:
             summaries.extend([f"ErrorHint: {item}" for item in error_hints])
         return summaries
 
-    def build_generator_lemma_context(self, item_limit: int = 12, error_limit: int = 3) -> list[str]:
-        return self._build_lemma_context(item_limit=item_limit, error_limit=error_limit)
-
-    def build_reviser_lemma_context(self, item_limit: int = 12, error_limit: int = 3) -> list[str]:
-        return self._build_lemma_context(item_limit=item_limit, error_limit=error_limit)

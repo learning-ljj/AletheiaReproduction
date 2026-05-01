@@ -3,7 +3,7 @@ from pathlib import Path
 from src.agents.base import BaseAgent
 from src.agents.searcher import SearcherAgent
 from src.memory.problem_memory import ProblemMemory
-from src.tools.search_sources import build_default_source_handlers
+from src.tools.search_papers.search_sources import build_search_source_handlers
 
 
 class _Resp:
@@ -162,6 +162,32 @@ def test_searcher_dedup_persists_unique_papers(tmp_path: Path) -> None:
 
 
 def test_default_search_source_handlers_are_non_empty() -> None:
-    handlers = build_default_source_handlers({})
+    handlers = build_search_source_handlers({})
     assert "openalex" in handlers
     assert "arxiv" in handlers
+
+
+def test_searcher_caps_results_per_source_to_five(tmp_path: Path) -> None:
+    def _source_many(query: str, limit: int) -> list[dict]:
+        # 返回数量 >= limit，确保测试受限于每源上限逻辑，而不是来源数据不足。
+        return [
+            {
+                "title": f"{query}-paper-{idx}",
+                "doi": f"10.1000/{query.replace(' ', '_')}-{idx}",
+                "abstract": "demo",
+                "authors": ["Tester"],
+                "url": f"https://example.org/{idx}",
+            }
+            for idx in range(limit + 2)
+        ]
+
+    memory = ProblemMemory(problem_id="p-search-cap", runs_root=tmp_path / "runs")
+    agent = SearcherAgent(
+        problem_memory=memory,
+        source_handlers={"source_many": _source_many},
+        limit_per_query=10,
+    )
+
+    result = agent.run(query="number theory", query_bundle=["graph theory"])
+    assert result["stages"]["raw_hits"] == 5
+    assert result["count"] == 5

@@ -1,8 +1,14 @@
 """Artifact layered reader for runs/{problem_id}/artifact files."""
 
-"""
-lemma 文档（三层）示例：
+from __future__ import annotations
 
+import re
+from pathlib import Path
+
+from src.tools.format import format_tool_error, format_tool_success
+
+# lemma 文档（三层）示例：
+"""
 ~~~markdown
 ---
 summary: 若 n 为正整数，则 gcd(n, n+1)=1
@@ -20,9 +26,9 @@ Step 2. 因此 d=1，故 gcd(n,n+1)=1。
 Source: generator
 Reference: self_proved
 ~~~
-
-paper 文档（三层）示例：
-
+"""
+# paper 文档（三层）示例：
+"""
 ~~~markdown
 ---
 arxiv_id: 2501.12345
@@ -43,14 +49,6 @@ authors: Alice; Bob
 url: https://arxiv.org/abs/2501.12345
 ~~~
 """
-
-from __future__ import annotations
-
-import re
-from pathlib import Path
-
-from src.tools.format import format_tool_error, format_tool_success
-
 
 def _is_allowed_artifact_path(path: Path) -> bool:
     # 仅允许读取 runs/{problem_id}/artifact/**，防止越权读任意磁盘文件。

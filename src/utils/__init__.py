@@ -1,4 +1,4 @@
-"""Utility modules grouped by domain: parsing, evaluation, and logging."""
+"""Utility modules grouped by domain: parsing, and logging."""
 
-__all__ = ["parsing", "evaluation", "logging"]
+__all__ = ["parsing", "logging"]
 

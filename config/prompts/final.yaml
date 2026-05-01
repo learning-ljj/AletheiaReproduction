@@ -27,6 +27,6 @@ final:
     {last_verifier_decision}
 
     最后一次 verifier 报告：
-    {last_verification_report}
+    {last_verification}
 
     请给出终局判定。

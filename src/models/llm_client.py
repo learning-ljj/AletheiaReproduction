@@ -102,7 +102,7 @@ class LLMClient:
         messages: list,
         tools: list[dict],
         tool_executor: Callable[[str, dict], str],
-        max_tool_rounds: int = 20,
+        max_rounds: int = 20,
         stream_prefix: str | None = None,
     ) -> LLMResponse:
         """思考模式下的多轮工具调用对话（流式）。"""
@@ -113,7 +113,7 @@ class LLMClient:
             messages=messages,
             tools=tools,
             tool_executor=tool_executor,
-            max_tool_rounds=max_tool_rounds,
+            max_rounds=max_rounds,
             stream_prefix=stream_prefix,
         )
 

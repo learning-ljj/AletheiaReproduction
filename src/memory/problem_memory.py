@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from src.memory.state import ProblemSnapshot
+from src.memory.state import ProblemSnapshot, StageSnapshot, EventSnapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -120,6 +119,92 @@ class ProblemMemory:
         merged.update(patch)
         return self.save_state(ProblemSnapshot.from_dict(merged))
 
+    def record_stage_event(
+        self,
+        stage_name: str,
+        turn_id: int,
+        status: str,
+        detail: str | None = None,
+        error: str | None = None,
+        timestamp: str | None = None,
+        event_detail: dict[str, Any] | None = None,
+    ) -> None:
+        """记录单个阶段的执行事件。
+        
+        参数:
+        - stage_name: 阶段名（例如 'GENERATOR', 'VERIFIER', 'REVISER'）
+        - turn_id: 所在的迭代轮次
+        - status: 该阶段的执行状态（例如 'SUCCESS', 'FAILED'）
+        - detail: 阶段结果的简短摘要（可选）
+        - error: 错误信息（若有）
+        - timestamp: 事件时间戳（默认使用当前UTC时间）
+        - event_detail: 附加细节字典（工具调用、参数等）
+        
+        流程:
+        1. 读取当前state.json
+        2. 在stages数组中找或创建该turn_id对应的StageSnapshot
+        3. 添加事件到该阶段的events数组
+        4. 保存更新后的state
+        """
+        if not isinstance(stage_name, str) or not stage_name.strip():
+            raise ValueError("stage_name must be a non-empty string")
+        if not isinstance(turn_id, int) or turn_id < 0:
+            raise ValueError("turn_id must be a non-negative integer")
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError("status must be a non-empty string")
+
+        # 默认使用当前UTC时间
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).isoformat()
+
+        # 读取当前状态
+        current_state = self.load_state()
+        if current_state is None:
+            # 如果还没有state.json，创建一个默认的
+            current_state = ProblemSnapshot(
+                problem_id=self.problem_id,
+                iteration_count=turn_id,
+                status="RUNNING",
+            )
+
+        # 查找对应turn_id的stage，或创建新的
+        stage_snapshot = None
+        for stage in current_state.stages:
+            if stage.turn_id == turn_id and stage.stage_name == stage_name:
+                stage_snapshot = stage
+                break
+
+        if stage_snapshot is None:
+            stage_snapshot = StageSnapshot(
+                stage_name=stage_name,
+                turn_id=turn_id,
+                status=status,
+                detail=detail,
+                last_error=error,
+                events=[],
+            )
+            current_state.stages.append(stage_snapshot)
+        else:
+            # 更新阶段的状态信息
+            stage_snapshot.status = status
+            if detail is not None:
+                stage_snapshot.detail = detail
+            if error is not None:
+                stage_snapshot.last_error = error
+
+        # 创建事件对象并添加到该阶段
+        event = EventSnapshot(
+            event_type="EXECUTION",
+            status=status,
+            timestamp=timestamp,
+            error=error,
+            detail=event_detail,
+        )
+        stage_snapshot.events.append(event)
+
+        # 保存更新后的状态
+        self.save_state(current_state)
+
     # ═════════════════════════════════════════════════════════════
     # 块 4：历史事件（追加型 JSONL）
     # ═════════════════════════════════════════════════════════════
@@ -195,7 +280,7 @@ class ProblemMemory:
 
     @staticmethod
     def _title_from_frontmatter(text: str) -> str | None:
-        """从 YAML frontmatter 提取 title 字段，若没有则尝试提取 summary 字段。"""
+        """从 YAML frontmatter 提取 title 字段。"""
         stripped = (text or "").lstrip()
         if not stripped.startswith("---"):
             return None
@@ -211,8 +296,7 @@ class ProblemMemory:
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            key_lower = key.strip().lower()
-            if key_lower == "title" or key_lower == "summary":
+            if key.strip().lower() == "title":
                 return value.strip()
         return None
 
@@ -226,37 +310,32 @@ class ProblemMemory:
         return None
 
     def add_lemma(self, content: str) -> Path:
-        """将标准三层 Markdown 引理内容持久化到 lemmas 目录。
+        """将引理内容持久化到 lemmas 目录。
 
-        内容应为以下三种格式之一：
-        1. 完整三层 Markdown（推荐，含 YAML 头部）。
-        2. 仅有 YAML 头部与证明。
-        3. 纯文本（无 YAML 头部），此时自动生成 title 及默认元数据。
-
-        文件名根据 YAML 中的 title 字段生成，若缺失则尝试用第一行非空文本，
-        若仍无法提取有意义文字，则使用内容哈希作为文件名（以保证稳定性）。
-        若文件名冲突（相同 title 但不同内容），自动追加 _2, _3 等编号并记录警告。
-        内容完全相同的引理不会被重复写入。
+        规则：
+        - 内容完全相同则复用已有文件；
+        - 文件名只能来自 YAML frontmatter 的 title；
+        - 缺少 title 直接报错；
+        - 同名但不同内容时追加编号并记录警告。
         """
         self.init_dirs()
 
+        normalized_content = self._normalize_lemma_content(content)
+
         # 1) 去重：若已有完全相同内容的文件，直接复用
-        existing = self._find_existing_markdown_by_content(self.lemmas_dir, content)
+        existing = self._find_existing_markdown_by_content(self.lemmas_dir, normalized_content)
         if existing is not None:
             return existing
 
-        # 2) 确定一个有意义且安全的文件名
-        title = self._title_from_frontmatter(content)
+        # 2) 文件名必须来自 frontmatter 的 title，缺失就直接报错
+        title = self._title_from_frontmatter(normalized_content)
         if not title:
-            title = self._first_non_empty_line(content)
+            raise ValueError("lemma missing YAML frontmatter title")
 
-        desired_name = self._slugify_filename(title) if title else None
+        desired_name = self._slugify_filename(title)
         if not desired_name:
-            # 无法提取任何可读文字时，用内容哈希生成稳定文件名
-            hash_hex = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
-            desired_name = f"lemma_{hash_hex}.md"
-        else:
-            desired_name = f"{desired_name}.md"
+            raise ValueError(f"invalid lemma title for filename: {title!r}")
+        desired_name = f"{desired_name}.md"
 
         # 3) 处理文件名冲突（相同文件名但不同内容）
         final_name = self._resolve_filename_collision_in_dir(
@@ -264,7 +343,7 @@ class ProblemMemory:
         )
 
         # 4) 写入
-        target = self._save_markdown(self.lemmas_dir, content, filename=final_name)
+        target = self._save_markdown(self.lemmas_dir, normalized_content, filename=final_name)
 
         # 5) 记录新增（如果没有被去重跳过）
         if target not in self._initial_lemma_paths:
@@ -274,13 +353,20 @@ class ProblemMemory:
 
     @staticmethod
     def _slugify_filename(text: str, max_len: int = 60) -> str:
-        """将文本转换为安全的文件名片段。"""
-        # 保留字母、数字、空白、连字符；去除其余字符
-        slug = re.sub(r'[^\w\s-]', '', text.lower()).strip()
-        # 空白和连字符统一替换为下划线
-        slug = re.sub(r'[-\s]+', '_', slug)
-        # 去除首尾下划线，截断
-        return slug[:max_len].strip('_')
+        # 删除 Windows 绝对禁止的字符，其余字符（包括中文）全部保留。
+        text = re.sub(r'[\\/:*?"<>|]', '', text)
+        # 压缩连续空白，避免标题里过多换行或制表符进入文件名。
+        text = re.sub(r'\s+', ' ', text).strip()
+        # 去除首尾的空格、点号、连字符或下划线，避免 Windows 文件名边界问题。
+        text = text.strip('. _-')
+        # 限制长度并返回。
+        return text[:max_len] or 'lemma'
+
+    @staticmethod
+    def _normalize_lemma_content(content: str) -> str:
+        r"""规范化 lemma 内容中的展示数学格式，把文本中的 LaTeX 显示数学公式标记 \[ ... \] 转换成 Markdown/数学渲染器更通用的 $$ ... $$ 格式。"""
+        normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.S)
+        return normalized
 
     @staticmethod
     def _resolve_filename_collision_in_dir(directory: Path, desired_name: str) -> str:
@@ -379,10 +465,10 @@ class ProblemMemory:
         self._atomic_write_text(self.citations_bib_path, normalized)
         return self.citations_bib_path
 
-    def save_bib_entries(self, entries: list[str]) -> Path:
-        return self.save_bibtex(
-            "\n\n".join((entry or "").strip() for entry in entries if entry)
-        )
+    # def save_bib_entries(self, entries: list[str]) -> Path:
+    #     return self.save_bibtex(
+    #         "\n\n".join((entry or "").strip() for entry in entries if entry)
+    #     )
 
     def save_manifest(self, payload: dict[str, Any]) -> Path:
         if not isinstance(payload, dict):

@@ -15,7 +15,7 @@ llm:
 
 agent:
   max_turns: 3
-  # max_tool_rounds is now configured under config\settings.yaml -> resilience.max_tool_rounds (default 20)
+  # max_rounds is now configured under config\settings.yaml -> resilience.max_rounds (default 20)
 
 memory:
   inject_layer1_limit: 20

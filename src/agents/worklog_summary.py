@@ -15,7 +15,7 @@ class WorklogSummaryAgent(BaseAgent):
             system_prompt=system_prompt,
             tools=[],
             tool_executor=None,
-            max_tool_rounds=1,
+            max_rounds=1,
             stream_prefix="WORKLOG",
         )
 

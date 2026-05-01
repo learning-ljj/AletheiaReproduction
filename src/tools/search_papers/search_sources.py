@@ -1,7 +1,8 @@
-"""Default online source handlers used by SearcherAgent."""
+"""Default online source handlers used by SearchPipelne."""
 
 from __future__ import annotations
 
+from functools import partial
 import json
 import ssl
 import urllib.parse
@@ -22,8 +23,7 @@ _ATOM_NS = {
 
 
 def _http_get(url: str, *, timeout: int = 20, headers: dict[str, str] | None = None) -> bytes:
-    # 某些学术源在企业/校园网络下会出现 SSL 链异常，
-    # 这里保留“宽松 SSL 回退”作为兜底，优先保证可用性。
+    # 某些学术源在企业/校园网络下会出现 SSL 链异常，这里保留“宽松 SSL 回退”作为兜底，优先保证可用性。
     def _make_lenient_ssl_context() -> ssl.SSLContext:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -58,8 +58,7 @@ def _http_get(url: str, *, timeout: int = 20, headers: dict[str, str] | None = N
 
 
 def _decode_openalex_abstract(inverted_index: dict | None) -> str:
-    # OpenAlex 的摘要是倒排索引格式：token -> positions。
-    # 这里按位置重排回自然文本。
+    # OpenAlex 的摘要是倒排索引格式：token -> positions, 这里按位置重排回自然文本。
     if not isinstance(inverted_index, dict):
         return ""
 
@@ -235,13 +234,8 @@ def search_semantic_scholar(query: str, limit: int, *, api_key: str | None = Non
             }
         )
     return papers
-
-
-def build_default_source_handlers(config: dict | None = None) -> dict[str, Callable[[str, int], list[dict]]]:
-    """Build production source handlers for SearcherAgent.
-
-    Retrieval source order can be configured by `retrieval.sources` in settings.yaml.
-    """
+def build_search_source_handlers(config: dict | None = None) -> dict[str, Callable[[str, int], list[dict]]]:
+    """构建 SearchPipelne 使用的默认搜索源处理器。"""
     settings = config if isinstance(config, dict) else {}
     retrieval_cfg = settings.get("retrieval") if isinstance(settings.get("retrieval"), dict) else {}
     tools_cfg = settings.get("tools") if isinstance(settings.get("tools"), dict) else {}
@@ -254,7 +248,7 @@ def build_default_source_handlers(config: dict | None = None) -> dict[str, Calla
 
     semantic_scholar_api_key = str(tools_cfg.get("semantic_scholar_api_key") or "").strip() or None
 
-    # 返回 source_name -> handler 的映射；SearcherAgent 会按该映射遍历调用。
+    # 返回 source_name -> handler 的映射；SearchPipelne 会按该映射遍历调用。
     handlers: dict[str, Callable[[str, int], list[dict]]] = {}
     for source in sources:
         if source == "openalex":
@@ -262,9 +256,6 @@ def build_default_source_handlers(config: dict | None = None) -> dict[str, Calla
         elif source == "arxiv":
             handlers[source] = search_arxiv
         elif source == "semantic_scholar":
-            handlers[source] = lambda query, limit, api_key=semantic_scholar_api_key: search_semantic_scholar(
-                query,
-                limit,
-                api_key=api_key,
-            )
+            # 用 partial 绑定 API key，避免额外包装类。
+            handlers[source] = partial(search_semantic_scholar, api_key=semantic_scholar_api_key)
     return handlers

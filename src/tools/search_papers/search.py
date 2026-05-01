@@ -1,4 +1,4 @@
-"""SearcherAgent 的底层检索工具。
+"""SearchPipelne 的底层检索工具。
 
 这个文件做三件核心事情：
 1) 把用户问题扩展成多条查询（提高召回率）；
@@ -186,6 +186,7 @@ def multi_source_search_with_diagnostics(
     queries: list[str],
     source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None,
     limit_per_query: int = 10,
+    max_results_per_source: int | None = None,
     retry_attempts: int = 2,
     retry_backoff_seconds: float = 0.2,
 ) -> dict:
@@ -231,11 +232,21 @@ def multi_source_search_with_diagnostics(
     recovered_errors: list[dict] = []
     total_attempts = 0
     normalized_max_attempts = max(1, retry_attempts)
+    normalized_max_per_source = None
+    if max_results_per_source is not None:
+        normalized_max_per_source = max(1, int(max_results_per_source))
+    source_result_counts: dict[str, int] = {}
 
     # 这层循环是“来源 x 查询”笛卡尔积：
     # 每个来源都尝试每条 query，避免单来源盲区导致漏检。
     for source_name, handler in source_handlers.items():
+        source_result_counts.setdefault(source_name, 0)
         for query in queries:
+            if (
+                normalized_max_per_source is not None
+                and source_result_counts[source_name] >= normalized_max_per_source
+            ):
+                break
             items: list[dict] = []
             transient_errors: list[dict] = []
 
@@ -273,10 +284,16 @@ def multi_source_search_with_diagnostics(
                 errors.append(transient_errors[-1])
 
             for item in items:
+                if (
+                    normalized_max_per_source is not None
+                    and source_result_counts[source_name] >= normalized_max_per_source
+                ):
+                    break
                 record = dict(item)
                 record.setdefault("source", source_name)
                 record.setdefault("query", query)
                 results.append(record)
+                source_result_counts[source_name] += 1
 
     return {
         "results": results,

@@ -1,6 +1,8 @@
 ﻿import json
 from pathlib import Path
 
+import pytest
+
 from src.agents.generator import GeneratorAgent
 from src.agents.reviser import ReviserAgent
 from src.agents.verifier import VerifierAgent
@@ -117,14 +119,14 @@ def test_prompt_verifier_contract_tags() -> None:
     assert "</citation_review>" in text
 
 
-def test_verifier_agent_adds_optional_contract_blocks() -> None:
+def test_verifier_agent_leaves_llm_output_unchanged() -> None:
     class _FakeVerifierLLM:
         def chat(self, messages, thinking=True, stream_prefix=None):
             if stream_prefix == "VERIFIER-P1":
                 return _Resp("phase1")
             return _Resp("<verdict>CORRECT</verdict>\n<verification>ok</verification>")
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -145,10 +147,12 @@ def test_verifier_agent_adds_optional_contract_blocks() -> None:
         tool_executor=lambda function_name, arguments: "",
     )
 
-    full_text, decision, _, _, _ = agent.run(problem_text="demo", proof_text="<solution>x</solution>")
-    assert decision == VerificationDecision.CORRECT
-    assert "<verified_lemmas>" in full_text
-    assert "<citation_review>" in full_text
+    full_text, tool_trace, preliminary_analysis = agent.run(problem_text="demo", proof_text="<solution>x</solution>")
+    # 验证 full_text 是原始 LLM 输出，未被修改
+    assert full_text == "<verdict>CORRECT</verdict>\n<verification>ok</verification>"
+    # 验证返回值结构
+    assert tool_trace == [] or isinstance(tool_trace, list)
+    assert isinstance(preliminary_analysis, str)
 
 
 def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
@@ -165,7 +169,7 @@ def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
                 "<citation_review>NONE</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -186,14 +190,16 @@ def test_verifier_preserves_llm_minor_flaw_verdict() -> None:
         tool_executor=lambda function_name, arguments: "",
     )
 
-    full_text, decision, verification_report, _, _ = agent.run(
+    full_text, tool_trace, preliminary_analysis = agent.run(
         problem_text="demo",
         proof_text="<solution>x</solution>",
     )
 
-    assert decision == VerificationDecision.MINOR_FLAW
-    assert "basic fact" in verification_report
+    # 验证 full_text 包含原始 LLM 输出的所有标签
     assert "<verdict>MINOR_FLAW</verdict>" in full_text
+    assert "basic fact" in full_text
+    assert "<verified_lemmas>NONE</verified_lemmas>" in full_text
+    assert "<citation_review>NONE</citation_review>" in full_text
 
 
 def test_verifier_handles_candidate_without_solution_tag() -> None:
@@ -212,7 +218,7 @@ def test_verifier_handles_candidate_without_solution_tag() -> None:
                 "<citation_review>NONE</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -234,19 +240,21 @@ def test_verifier_handles_candidate_without_solution_tag() -> None:
         tool_executor=lambda function_name, arguments: "",
     )
 
-    full_text, decision, verification_report, _, _ = agent.run(
+    full_text, tool_trace, preliminary_analysis = agent.run(
         problem_text="demo",
         proof_text="draft without xml tags",
     )
 
-    assert decision == VerificationDecision.MINOR_FLAW
-    assert "<solution>" in verification_report
+    # 验证 full_text 包含所有必要的输出标签
+    assert "<verdict>MINOR_FLAW</verdict>" in full_text
+    assert "<solution>" in full_text
+    assert "<citation_review>NONE</citation_review>" in full_text
+    # 验证 Phase 1 输入包含原始 proof_text（因为没有 <solution> 标签）
     assert llm.phase1_user_messages
     assert "draft without xml tags" in llm.phase1_user_messages[0]
-    assert "<citation_review>NONE</citation_review>" in full_text
 
 
-def test_verifier_contract_failure_degrades_to_minor_flaw() -> None:
+def test_verifier_contract_failure_surfaces_directly() -> None:
     class _FakeVerifierLLM:
         def __init__(self):
             self.phase3_calls = 0
@@ -258,7 +266,7 @@ def test_verifier_contract_failure_degrades_to_minor_flaw() -> None:
             # 持续返回无效格式，触发 verifier 内部降级逻辑。
             return _Resp("invalid verifier output")
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -279,15 +287,17 @@ def test_verifier_contract_failure_degrades_to_minor_flaw() -> None:
         tool_executor=lambda function_name, arguments: "",
     )
 
-    full_text, decision, verification_report, _, _ = agent.run(
+    # 现在 verifier 不再做本地解析，直接返回 LLM 输出
+    # 格式错误将由 orchestrator 在调用 parse_verification_decision 时触发
+    full_text, tool_trace, preliminary_analysis = agent.run(
         problem_text="demo",
         proof_text="<solution>x</solution>",
     )
-
-    assert decision == VerificationDecision.MINOR_FLAW
-    assert "contract validation failed" in verification_report
-    assert "<verdict>MINOR_FLAW</verdict>" in full_text
-    assert "<citation_review>" in full_text
+    
+    # 验证 verifier 返回了 LLM 的原始输出（即使格式不正确）
+    assert full_text == "invalid verifier output"
+    assert isinstance(tool_trace, list)
+    assert isinstance(preliminary_analysis, str)
 
 
 def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
@@ -301,13 +311,12 @@ def test_verifier_persists_verified_lemmas(tmp_path: Path) -> None:
             return _Resp("<solution>draft</solution>")
 
         def call_verifier(self, problem_text: str, proof_text: str):
+            # 现在 verifier 返回3个值：verifier_response, tool_trace, preliminary_analysis
             return (
                 "<verdict>CORRECT</verdict>\n"
                 "<verification>ok</verification>\n"
                 "<verified_lemmas>Lemma: if a=b then b=a. Proof: symmetry.</verified_lemmas>\n"
                 "<citation_review>NONE</citation_review>",
-                VerificationDecision.CORRECT,
-                "",
                 [],
                 "phase1",
             )

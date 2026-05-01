@@ -4,7 +4,8 @@ from pathlib import Path
 from src.agents.citation_reviewer import CitationReviewerAgent
 from src.agents.verifier import VerifierAgent
 from src.memory.problem_memory import ProblemMemory, set_current_problem_memory
-from src.tools.registry import execute_tool, get_tool_schemas
+from src.tools.registry import ToolExecutor
+from src.tools.schemas import get_tool_schemas
 from src.utils.parsing.parser import extract_xml_tag
 
 
@@ -44,10 +45,11 @@ def test_verifier_triggers_citation_review_on_demand(tmp_path: Path) -> None:
             return _Resp(
                 "<verdict>CORRECT</verdict>\n"
                 "<verification>ok</verification>\n"
-                "<verified_lemmas>NONE</verified_lemmas>"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>{\"fail_count\": 0, \"items\": [{\"passed\": true}]}</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -69,9 +71,9 @@ def test_verifier_triggers_citation_review_on_demand(tmp_path: Path) -> None:
     )
 
     proof_text = "<solution>claim [cite:artifact/papers/demo.md]</solution>"
-    full_text, _, _, _, _ = agent.run(problem_text="demo", proof_text=proof_text)
+    verifier_response, tool_trace, preliminary_analysis = agent.run(problem_text="demo", proof_text=proof_text)
 
-    review_text = extract_xml_tag(full_text, "citation_review")
+    review_text = extract_xml_tag(verifier_response, "citation_review")
     review_payload = json.loads(review_text)
     assert review_payload["fail_count"] == 0
     assert review_payload["items"][0]["passed"] is True
@@ -87,10 +89,11 @@ def test_verifier_ignores_citations_outside_solution_block() -> None:
             return _Resp(
                 "<verdict>CORRECT</verdict>\n"
                 "<verification>ok</verification>\n"
-                "<verified_lemmas>NONE</verified_lemmas>"
+                "<verified_lemmas>NONE</verified_lemmas>\n"
+                "<citation_review>NONE</citation_review>"
             )
 
-        def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+        def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
             return _Resp("phase2")
 
         @staticmethod
@@ -115,9 +118,9 @@ def test_verifier_ignores_citations_outside_solution_block() -> None:
         "<thinking>Template note [cite:placeholder/path.md]</thinking>\n"
         "<solution>No citation is used in the final proof.</solution>"
     )
-    full_text, _, _, _, _ = agent.run(problem_text="demo", proof_text=proof_text)
+    verifier_response, tool_trace, preliminary_analysis = agent.run(problem_text="demo", proof_text=proof_text)
 
-    review_text = extract_xml_tag(full_text, "citation_review")
+    review_text = extract_xml_tag(verifier_response, "citation_review")
     assert review_text == "NONE"
 
 
@@ -138,10 +141,10 @@ class _FakeLLMVerifierWithCitationTool:
             "<verdict>CORRECT</verdict>\n"
             "<verification>ok</verification>\n"
             "<verified_lemmas>NONE</verified_lemmas>\n"
-            "<citation_review>NONE</citation_review>"
+            "<citation_review>{\"fail_count\": 0, \"items\": [{\"passed\": true}]}</citation_review>"
         )
 
-    def chat_with_tools(self, messages, tools, tool_executor, stream_prefix=None, max_tool_rounds=20):
+    def chat_with_tools(self, messages, tools, tool_executor, max_rounds=20, stream_prefix=None, **kwargs):
         self.last_tool_payload = tool_executor(
             "call_citation_reviewer",
             {
@@ -156,7 +159,7 @@ class _FakeLLMVerifierWithCitationTool:
         return
 
 
-def test_verifier_citation_review_can_use_tool_bridge(tmp_path: Path) -> None:
+def test_verifier_citation_review_requires_llm_contract(tmp_path: Path) -> None:
     memory = ProblemMemory(problem_id="p-verifier-tool-cite", runs_root=tmp_path / "runs")
     memory.add_paper("claim", filename="demo.md")
     set_current_problem_memory(memory)
@@ -173,7 +176,7 @@ def test_verifier_citation_review_can_use_tool_bridge(tmp_path: Path) -> None:
             }
         },
         tools=get_tool_schemas(),
-        tool_executor=execute_tool,
+        tool_executor=ToolExecutor(),
     )
 
     proof_text = "<solution>claim [cite:artifact/papers/demo.md]</solution>"

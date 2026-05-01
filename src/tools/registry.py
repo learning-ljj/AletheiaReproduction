@@ -2,8 +2,10 @@
 
 from typing import Callable
 
-from src.agents.citation_reviewer import CitationReviewerAgent
-from src.agents.searcher import SearcherAgent
+# 还没把 Search 功能改为 Agent，现在是 pipeline , 在 tools/search_papers/
+from src.tools.search_papers.searcher import SearchPipelne
+from src.tools.review_citation import review_citation
+
 from src.memory.problem_memory import get_current_problem_memory
 from src.tools.artifact_reader import read_artifact
 from src.tools.code_executor import run_python
@@ -11,20 +13,46 @@ from src.tools.format import (
     format_tool_error,
     format_tool_success,
 )
-from src.tools.schemas import get_tool_schemas as _schema_get_tool_schemas
 
 
-_SEARCH_SOURCE_HANDLERS: dict[str, Callable[[str, int], list[dict]]] = {}
+class ToolExecutor:
+    """按工具名执行统一包络的工具调用器。"""
 
+    def __init__(self, source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None):
+        self.source_handlers = dict(source_handlers or {})
 
-def configure_tool_resilience(*, max_attempts: int = 1, backoff_seconds: float = 0.0) -> None:
-    """Compatibility hook for settings; MVP middleware keeps single-attempt execution."""
-    _ = max_attempts
-    _ = backoff_seconds
+    def __call__(self, function_name: str, arguments: dict) -> str:
+        if function_name not in _TOOL_MAP:
+            available = list(_TOOL_MAP.keys())
+            return format_tool_error(
+                tool=function_name,
+                error_code="UNKNOWN_TOOL",
+                message=f"Unknown tool: {function_name!r}.",
+                retryable=False,
+                detail={"available": available},
+            )
 
+        normalized_arguments = arguments if isinstance(arguments, dict) else {}
+        try:
+            if function_name == "call_searcher":
+                return _format_call_searcher(
+                    source_handlers=self.source_handlers,
+                    **normalized_arguments,
+                )
+            return _TOOL_MAP[function_name](**normalized_arguments)
+        except BaseException as exc:
+            # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。目标是把“中断类错误”也转换为结构化信息交给 LLM，而不是让整个主链路直接崩掉。
+            if isinstance(exc, (SystemExit, GeneratorExit)):
+                raise
 
-def _is_retryable_exception(exc: BaseException) -> bool:
-    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
+            retryable = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or isinstance(exc, KeyboardInterrupt)
+            return format_tool_error(
+                tool=function_name,
+                error_code="TOOL_RUNTIME_EXCEPTION",
+                message=f"{function_name} raised {type(exc).__name__}: {exc}",
+                retryable=retryable,
+                detail={"attempt": 1, "max_attempts": 1},
+            )
 
 
 def _format_run_python(code: str) -> str:
@@ -51,11 +79,13 @@ def _format_run_python(code: str) -> str:
 
 
 def _format_call_searcher(
+    *,
+    source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None,
     query: str | None = None,
     query_bundle: list[str] | None = None,
     **extra_args,
 ) -> str:
-    """调用 SearcherAgent 并返回检索摘要与落盘路径。"""
+    """调用 SearchPipelne 并返回检索摘要与落盘路径。"""
     problem_memory = get_current_problem_memory()
     if problem_memory is None:
         return format_tool_error(
@@ -64,7 +94,7 @@ def _format_call_searcher(
             message="ProblemMemory context is missing for call_searcher.",
             retryable=False,
         )
-    if not _SEARCH_SOURCE_HANDLERS:
+    if not source_handlers:
         return format_tool_error(
             tool="call_searcher",
             error_code="NO_SEARCH_SOURCES_CONFIGURED",
@@ -72,14 +102,14 @@ def _format_call_searcher(
             retryable=False,
         )
 
-    agent = SearcherAgent(
+    search_pipeline = SearchPipelne(
         problem_memory=problem_memory,
-        source_handlers=_SEARCH_SOURCE_HANDLERS,
+        source_handlers=source_handlers,
     )
 
-    # 重点说明：agent.run 不仅会返回 papers，也会返回 errors/recovered_errors。
+    # 重点说明：search_pipeline.run 不仅会返回 papers，也会返回 errors/recovered_errors。
     # 这些错误字段会原样回传给 LLM，帮助模型决定下一步动作，而不是像传统流程那样“空结果即静默降级”。
-    result = agent.run(query=query, query_bundle=query_bundle)
+    result = search_pipeline.run(query=query, query_bundle=query_bundle)
     has_errors = bool(result.get("has_errors"))
 
     payload: dict = {
@@ -104,38 +134,25 @@ def _format_read_artifact(path: str, layer: int) -> str:
     return read_artifact(path=path, layer=layer)
 
 
-def _format_call_citation_reviewer(
+def _format_review_citation(
     cites: list[str] | None = None,
-    claim_spans: list[str] | None = None,
     **extra_args,
 ) -> str:
-    """调用 CitationReviewerAgent 并返回逐条引用审查结果。"""
+    """调用引用内容检查工具，并返回统一包络。"""
     problem_memory = get_current_problem_memory()
     if problem_memory is None:
         return format_tool_error(
-            tool="call_citation_reviewer",
+            tool="review_citation",
             error_code="NO_PROBLEM_MEMORY",
-            message="ProblemMemory context is missing for call_citation_reviewer.",
+            message="ProblemMemory context is missing for review_citation.",
             retryable=False,
         )
 
-    normalized_cites = [(item or "").strip() for item in (cites or []) if (item or "").strip()]
-    normalized_spans = [str(item or "").strip() for item in (claim_spans or [])]
-
-    reviewer = CitationReviewerAgent(problem_memory=problem_memory)
-    review = reviewer.review(cites=normalized_cites, claim_spans=normalized_spans)
-
-    payload: dict = {
-        "cites": normalized_cites,
-        "claim_spans": normalized_spans,
-        "summary": review.get("summary", ""),
-        "items": review.get("items", []),
-        "fail_count": review.get("fail_count", 0),
-        "severity_suggestion": review.get("severity_suggestion", "MINOR_FLAW"),
-    }
+    review = review_citation(problem_memory=problem_memory, cites=cites or [])
+    payload: dict = dict(review)
     if extra_args:
         payload["extra_args"] = extra_args
-    return format_tool_success(tool="call_citation_reviewer", data=payload)
+    return format_tool_success(tool="review_citation", data=payload)
 
 
 # 函数名 → 可调用对象的映射
@@ -143,54 +160,5 @@ _TOOL_MAP: dict = {
     "run_python": _format_run_python,
     "call_searcher": _format_call_searcher,
     "read_artifact": _format_read_artifact,
-    "call_citation_reviewer": _format_call_citation_reviewer,
+    "review_citation": _format_review_citation,
 }
-
-
-def configure_searcher_sources(source_handlers: dict[str, Callable[[str, int], list[dict]]]) -> None:
-    """Configure source handlers used by call_searcher bridge (useful for tests)."""
-    global _SEARCH_SOURCE_HANDLERS
-    _SEARCH_SOURCE_HANDLERS = dict(source_handlers or {})
-
-
-# ------------------------------------------------------------------
-# 公开接口
-# ------------------------------------------------------------------
-
-
-def get_tool_schemas() -> list[dict]:
-    """返回 OpenAI function calling 格式的 tools 列表。"""
-    return _schema_get_tool_schemas()
-
-
-def execute_tool(function_name: str, arguments: dict) -> str:
-    """根据 function_name 路由到对应工具函数，返回字符串结果。
-
-    未知工具或调用异常时返回错误描述字符串，不抛出异常，避免中断验证循环。
-    """
-    if function_name not in _TOOL_MAP:
-        available = list(_TOOL_MAP.keys())
-        return format_tool_error(
-            tool=function_name,
-            error_code="UNKNOWN_TOOL",
-            message=f"Unknown tool: {function_name!r}.",
-            retryable=False,
-            detail={"available": available},
-        )
-
-    normalized_arguments = arguments if isinstance(arguments, dict) else {}
-    try:
-        return _TOOL_MAP[function_name](**normalized_arguments)
-    except BaseException as exc:
-        # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。目标是把“中断类错误”也转换为结构化信息交给 LLM，而不是让整个主链路直接崩掉。
-        if isinstance(exc, (SystemExit, GeneratorExit)):
-            raise
-
-        retryable = _is_retryable_exception(exc) or isinstance(exc, KeyboardInterrupt)
-        return format_tool_error(
-            tool=function_name,
-            error_code="TOOL_RUNTIME_EXCEPTION",
-            message=f"{function_name} raised {type(exc).__name__}: {exc}",
-            retryable=retryable,
-            detail={"attempt": 1, "max_attempts": 1},
-        )

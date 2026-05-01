@@ -30,7 +30,7 @@ class ToolCallSession:
         messages: list,
         tools: list[dict],
         tool_executor: Callable[[str, dict], str],
-        max_tool_rounds: int = 20,
+        max_rounds: int = 20,
         stream_prefix: str | None = None,
     ) -> tuple[str, str, list[dict]]:
         """Return (content, reasoning_content, tool_trace).
@@ -42,8 +42,8 @@ class ToolCallSession:
         last_reasoning = ""
         content = ""
 
-        # 单个阶段内的“工具闭环”最多跑 max_tool_rounds 轮。
-        for _ in range(max_tool_rounds):
+        # 单个阶段内的“工具闭环”最多跑 max_rounds 轮。
+        for _ in range(max_rounds):
             # 根据当前对话历史与可用工具构建本轮 LLM 请求参数,包装为字典 kwargs
             kwargs = self._build_kwargs(messages, tools=tools)
             # 发起流式请求并解析出：思路片段、正文、以及本轮意图触发的工具调用列表
