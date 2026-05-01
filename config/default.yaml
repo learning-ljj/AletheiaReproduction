@@ -1,0 +1,27 @@
+experiment:
+  random_seed: 42
+  run_root: runs
+  save_effective_config: true
+  save_prompt_snapshot: true
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.0
+  max_tokens: 16384
+  connect_timeout_seconds: 30
+  read_timeout_seconds: 600
+  stream_max_retries: 2
+
+agent:
+  max_turns: 3
+  # max_rounds is now configured under config\settings.yaml -> resilience.max_rounds (default 20)
+
+memory:
+  inject_layer1_limit: 20
+  auto_save_state_each_turn: true
+
+reproducibility:
+  save_git_commit: true
+  save_model_version: true
+  save_prompt_version: true

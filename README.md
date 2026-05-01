@@ -1,209 +1,132 @@
 ﻿# AletheiaReproduction
 
-> **An independent Python reproduction of the [Aletheia](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) framework** by Google DeepMind, built for local experimentation with large language model-based mathematical reasoning.
+> Google DeepMind [Aletheia](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) 的独立 Python 复现，面向本地实验、数学推理调试与批量评测。
 
----
+## 概览
 
-## Background
-
-[Aletheia](https://github.com/google-deepmind/superhuman-reasoning) is a framework introduced in Google DeepMind's *Superhuman Reasoning* research. It solves competition-level mathematics problems through an iterative refinement loop:
+本项目实现了一个固定编排的生成-验证-修订循环：
 
 ```
-Generator => Verifier (3-phase) => Reviser / Generator => ...
+Generator -> Verifier -> Reviser / Generator -> ... -> Finalizer
 ```
 
-This repository reimplements the core pipeline in Python with an OpenAI-compatible client, targeting the DeepSeek V3.2 model (via DeepSeek official API or Volcano Engine).
+当前代码路径重点包括：
 
----
+- `main.py` 提供单题 CLI 入口
+- `evaluation/run_imobench.py` 提供 IMO Bench 批量评测入口
+- `src/core/orchestrator.py` 负责主循环与状态持久化
+- `src/tools/registry.py` 统一分发 `run_python`、`call_searcher`、`read_artifact`、`review_citation`
+- `src/memory/problem_memory.py` 负责每题运行目录、`history.jsonl`、`state.json` 和工件输出
 
-## Architecture
+## 目录结构
 
-```
+```text
 AletheiaReproduction/
-+-- main.py                     # CLI entry point
-+-- config/
-|   +-- settings.yaml           # LLM provider / model config (env-var based)
-|   +-- prompts.yaml            # System & user prompts for Generator / Verifier / Reviser
-+-- src/
-|   +-- core/
-|   |   +-- agent.py            # AletheiaAgent + call_generator / verifier / reviser
-|   |   +-- state.py            # ProofState, VerificationLog, VerificationDecision
-|   |   +-- config.py           # load_config(), load_prompts()
-|   +-- models/
-|   |   +-- llm_client.py       # LLMClient (streaming + tool-calling, thinking protocol)
-|   +-- tools/
-|   |   +-- registry.py         # Tool JSON schemas + execute_tool() dispatcher
-|   |   +-- code_executor.py    # run_python - subprocess sandbox (sympy / numpy)
-|   |   +-- web_search.py       # search_arxiv, read_arxiv_latex (arXiv API)
-|   |   +-- wiki_search.py      # search_wikipedia (MediaWiki API + HTML cleanup)
-|   +-- utils/
-|       +-- logger.py           # Raw JSONL append + readable text log export
-|       +-- parser.py           # Strict XML parsing for solution / decision / verification report
-|       +-- evaluator.py        # Answer normalisation & equality check
-|       +-- data_loader.py      # Canonical IMO Bench CSV loaders
-|       +-- raw_log_reader.py   # Raw JSONL event reader
-|       +-- worklog_builder.py  # Raw JSONL -> Markdown worklog
-+-- scripts/
-|   +-- run_imobench.py         # Batch benchmark runner
-+-- data/
-    +-- imobench/               # IMO Bench CSV datasets (download separately)
+├── main.py                  # 单题 CLI 入口
+├── evaluation/
+│   ├── data_loader.py       # IMO Bench 数据加载
+│   └── run_imobench.py      # 批量评测入口
+├── config/
+│   ├── settings.yaml        # 运行配置，支持 ${ENV_VAR} 替换
+│   └── prompts/             # 按 agent/stage 拆分的 prompt 文件
+├── src/
+│   ├── core/                # 配置、编排、终态处理
+│   ├── agents/              # Generator / Verifier / Reviser
+│   ├── memory/              # ProblemMemory 与运行快照
+│   ├── models/              # LLM client 与传输层
+│   ├── tools/               # 工具注册、搜索、代码执行、引用检查
+│   └── utils/               # 解析、日志、评测等通用模块
+└── data/
+    ├── imobench/            # IMO Bench CSV 数据集
+    └── logs/                # 旧日志与样例记录
 ```
 
-### Runtime Flow
+更多架构说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-1. main.py 读取问题文本、配置和 prompts，创建 AletheiaAgent。
-2. AletheiaAgent 装配 LLM client、tool registry、orchestrator。
-3. Orchestrator 先调用 Generator 产出候选解，再进入 Verifier 三阶段流程。
-4. Verifier Phase 3 采用严格 XML 契约：必须返回 verdict 与 verification 两个标签块；缺失时重试，仍失败则终止为 parse_error。
-5. 每个阶段都写入 raw JSONL；可选生成可读文本日志与离线 Markdown worklog。
-6. scripts/run_imobench.py 复用同一套核心流程，并统一从 src/utils/data_loader.py 加载数据集。
+## 安装
 
-### Agent Loop
+### 依赖
 
-```
-Problem Text
-    |
-    v
-[GENERATOR]  -> thinking + preliminary solution
-    |
-    v
-[VERIFIER]   Phase 1 - read & plan
-             Phase 2 - tool calls (run_python / wiki / arxiv)
-             Phase 3 - verdict [DECISION]
-    |
-+---+--------------------+-------------------+
-| CORRECT                | MINOR_FLAW        | CRITICAL_FLAW
-| -> return answer       | -> [REVISER]      | -> [GENERATOR]
-+------------------------+-------------------+
-```
+- Python 3.13+
+- `uv`（推荐）或 `pip`
 
-| Decision | Meaning | Next step |
-|---|---|---|
-| `CORRECT` | No logical errors found | Terminate, return answer |
-| `MINOR_FLAW` | Justification gap or minor error | Route to Reviser |
-| `CRITICAL_FLAW` | Fundamental logical error | Route back to Generator |
-
----
-
-## Setup
-
-### Prerequisites
-
-- Python >= 3.13
-- [uv](https://github.com/astral-sh/uv) (recommended) or pip
-
-### 1. Clone & Install
+### 安装步骤
 
 ```powershell
 git clone https://github.com/learning-ljj/AletheiaReproduction.git
 cd AletheiaReproduction
 
-# Recommended: uv
 uv pip install -r requirements.txt
-
-# Alternative: pip
+# 或
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment Variables
+### 环境变量
+
+复制 `.env` 并配置模型提供方相关环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `LLM_PROVIDER` | 当前使用的 provider，例如 `deepseek` 或 `volcano` |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key |
+| `VOLCANO_API_KEY` | Volcano Engine API Key |
+| `VOLCANO_BASE_URL` | Volcano API base URL |
+| `VOLCANO_MODEL` | Volcano 模型名 |
+| `E2B_API_KEY` | 代码执行沙箱密钥，可选 |
+| `SEMANTIC_SCHOLAR_API_KEY` | 学术检索密钥，可选 |
+
+`config/settings.yaml` 和 `config/prompts/` 会在运行时自动加载，字符串里的 `${ENV_VAR}` 会被替换成环境变量值。
+
+## 用法
+
+### 单题运行
 
 ```powershell
-copy .env.example .env
-# Edit .env and fill in your real API keys
-```
+# 从文本文件读取题目
+python main.py data/problem/PB-Basic-001.txt --max-turns 3
 
-`.env` key fields:
-
-| Variable | Required | Description |
-|---|---|---|
-| `LLM_PROVIDER` | Yes | `deepseek` or `volcano` |
-| `DEEPSEEK_API_KEY` | if deepseek | DeepSeek platform API key |
-| `VOLCANO_API_KEY` | if volcano | Volcano Engine API key |
-| `VOLCANO_BASE_URL` | if volcano | e.g. `https://ark.cn-beijing.volces.com/api/v3` |
-| `VOLCANO_MODEL` | if volcano | e.g. `deepseek-v3-2-251201` |
-
----
-
-## Dependencies
-
-Current runtime dependencies are intentionally narrow:
-
-- LLM / config layer: openai, httpx, pydantic, pyyaml, python-dotenv
-- Math execution tool: sympy, numpy, scipy
-
-Removed from requirements because they are not used by the current tracked code path: requests, beautifulsoup4, lxml, pandas, tqdm, matplotlib, pytest.
-
----
-
-## Usage
-
-### Single Problem (CLI)
-
-```powershell
-# From a file
-python main.py data/e2e_inputs/PB-Basic-001.txt --max-turns 3
-
-# Inline text
+# 直接传入题面文本
 python main.py --problem "Prove that for all n>=1, n^2+n is even." --max-turns 1
 ```
 
-### Batch Benchmark (IMO Bench)
-
-Download datasets from [IMO Bench](https://imobench.github.io) and place CSV files in `data/imobench/`.
+### 批量评测
 
 ```powershell
-python scripts/run_imobench.py --dataset answerbench --count 10 --max-turns 3
+python -m evaluation.run_imobench --dataset answerbench --count 10 --max-turns 3
+python -m evaluation.run_imobench --dataset proofbench --count 10 --max-turns 3
+python -m evaluation.run_imobench --dataset gradingbench --count 10 --max-turns 3
+python -m evaluation.run_imobench --dataset all --count 10
 ```
 
-### Outputs
+### 常用输出
 
-- Raw event log: data/logs/{problem_id}.jsonl
-- Offline Markdown worklog: generated by WorklogBuilder from raw JSONL
+- 原始事件日志：`runs/{problem_id}_{timestamp}/history.jsonl`
+- 状态快照：`runs/{problem_id}_{timestamp}/state.json`
+- 最终答案工件：`runs/{problem_id}_{timestamp}/artifact/final_output.md`
+- 可读工作日志：`runs/{problem_id}_{timestamp}/artifact/worklog.md`
+- 批量评测结果：`evaluation/results/imobench_{dataset}_{timestamp}.json`
 
----
+## 工具
 
-## Tools
-
-| Tool | Function |
+| 工具 | 作用 |
 |---|---|
-| `run_python` | Execute Python code in a subprocess sandbox (sympy, numpy, scipy available) |
-| `search_wikipedia` | Query Wikipedia and return cleaned plain text |
-| `search_arxiv` | Query arXiv API and return paper titles + abstracts |
-| `read_arxiv_latex` | Download and extract arXiv LaTeX source |
+| `run_python` | 在子进程沙箱中执行 Python 代码，供符号计算与验证使用 |
+| `call_searcher` | 触发检索流水线并写入分层检索产物 |
+| `read_artifact` | 读取 artifact markdown 的指定层 |
+| `review_citation` | 检查引用路径与 claim-source 一致性 |
 
----
+## 数据集
 
-## Evaluation Datasets
+评测模块默认读取 [IMO Bench](https://imobench.github.io) 的 CSV 数据集，放置于 `data/imobench/`：
 
-Datasets from [IMO Bench](https://imobench.github.io) - download separately:
+| 数据集 | 文件 |
+|---|---|
+| AnswerBench | `data/imobench/answerbench_v2.csv` |
+| ProofBench | `data/imobench/proofbench.csv` |
+| GradingBench | `data/imobench/gradingbench.csv` |
 
-| Dataset | File | Description |
-|---|---|---|
-| AnswerBench | `data/imobench/answerbench_v2.csv` | Short-answer competition problems |
-| ProofBench | `data/imobench/proofbench.csv` | Proof-based problems |
-| GradingBench | `data/imobench/gradingbench.csv` | Human-graded solution pairs |
+## 许可证与归属
 
----
+本项目是基于 Google DeepMind [superhuman-reasoning](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) 的独立复现，遵循 Apache 2.0 许可。
 
-## License & Attribution
-
-This project is a **derivative work** based on [Aletheia](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) by Google DeepMind, licensed under the **Apache License 2.0**.
-
-- **Original work**: Copyright (c) Google LLC - [superhuman-reasoning](https://github.com/google-deepmind/superhuman-reasoning)
-- **This reproduction**: Copyright (c) 2025 learning-ljj
-
-Key differences from the original:
-
-- Implemented in Python with an OpenAI-compatible API client
-- Supports DeepSeek V3.2 interleaved thinking (reasoning_content + content)
-- Extended tool registry: Wikipedia and arXiv integrations added
-- JSONL structured logging with offline WorklogBuilder markdown generation
-- CLI (main.py) and batch benchmark runner (run_imobench.py)
-
-See [LICENSE](LICENSE) for full terms.
-
----
-
-## Disclaimer
-
-This is an **independent reproduction** created for research and personal learning. It is **not** an official Google or Google DeepMind product.
+详细条款请见 [LICENSE](LICENSE)。

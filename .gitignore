@@ -53,14 +53,15 @@ artifact/
 
 # ── 测试脚本（仅本地调试用，不上传）───────────────────────
 tests/
-data/e2e_inputs/
 
-# ── scripts 目录：仅保留 run_imobench.py ──────────────────
-scripts/*
-!scripts/run_imobench.py
+# # ── scripts 目录：仅保留 run_imobench.py ──────────────────
+# scripts/*
+# bin/
+# !scripts/run_imobench.py
 
 # ── 文档报告（本地调试报告，不上传）───────────────────────
-_docs/
+ZZZ草稿簿/
+runs/
 
 # ── pytest 缓存 ────────────────────────────────────────────
 .pytest_cache/

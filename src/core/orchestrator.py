@@ -1,359 +1,408 @@
-"""任务编排器：只负责状态机调度，不关心具体 LLM 实现。"""
+"""任务编排器：执行主循环并协调节点执行与终态持久化。"""
 
-import logging
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
-from src.core.state import ProofState, RunStatus, VerificationLog, VerificationDecision
-from src.utils.parser import extract_xml_tag
-
-_logger = logging.getLogger(__name__)
+from src.core.context_builder import ContextBuilder
+from src.core.finalizer import FinalizerEngine
+from src.core.recovery_policy import RecoveryPolicy
+from src.memory.state import ProofState, ProblemSnapshot, StageSnapshot, VerificationDecision
+from src.memory.problem_memory import ProblemMemory, set_current_problem_memory
+from src.utils.parsing.parser import extract_xml_tag, extract_xml_tags, parse_decision
 
 
 class Orchestrator:
-    """Aletheia 调度器。"""
+    """Aletheia 调度器门面。"""
 
     def __init__(
         self,
         max_turns: int,
         pipeline: object,
-        logger: object,
-        finalizer: object,
+        runs_root: Path | str = "runs",
     ):
+        """初始化 Orchestrator。
+
+        参数:
+        - max_turns: 最大的验证/修订回合数（不含初始生成回合）。
+        - pipeline: 提供 `generator_agent.run`, `reviser_agent.run`, `verifier_agent.run` 等方法的流水线对象。
+        - runs_root: 运行产物与问题存档的根目录（路径或字符串）。
+
+        内部逻辑:
+        - 初始化 `problem_memory`、`context_builder` 占位符以及 `RecoveryPolicy`。
+        """
         self.max_turns = max_turns
         self.pipeline = pipeline
-        self.logger = logger
-        self.finalizer = finalizer
+        self.runs_root = Path(runs_root)
+        self.problem_memory: ProblemMemory | None = None
+        self.context_builder: ContextBuilder | None = None
+        self.warning_messages: list[str] = []
+        self.recovery_policy = RecoveryPolicy()
+        self._current_stages: list[StageSnapshot] = []
 
     def _now(self) -> str:
+        """返回当前 UTC 时间的 ISO8601 字符串表示。
+
+        返回示例: '2026-04-16T12:34:56.789012+00:00'。
+        """
         return datetime.now(timezone.utc).isoformat()
 
-    def _append_raw(self, problem_id: str, payload: dict) -> None:
-        self.logger.append_raw_event(problem_id=problem_id, payload=payload)
-
-    def _save_artifact(self, state: ProofState) -> None:
-        """保存终态 final_output 到 artifact 目录。"""
-        if not (state.final_output or "").strip():
-            return
-        try:
-            self.logger.save_final_output_markdown(
-                problem_id=state.problem_id,
-                final_output=state.final_output,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _logger.error("Failed to save final_output artifact: %s", exc)
-
-    @staticmethod
-    def _normalize_partial_solution(solution_text: str, fallback_undone: str) -> str:
-        """确保 PARTIAL 的 solution 使用两段模板，并包含 <done>/<undone> 子标签。"""
-        text = (solution_text or "").strip()
-        done_block = extract_xml_tag(text, "done").strip()
-        undone_block = extract_xml_tag(text, "undone").strip()
-
-        if done_block and undone_block:
-            return f"<done>{done_block}</done>\n<undone>{undone_block}</undone>"
-
-        if not done_block:
-            done_block = text or "无可复用的完整步骤。"
-        if not undone_block:
-            undone_block = (fallback_undone or "关键步骤仍缺失，无法形成完整可验证解答。").strip()
-
-        return f"<done>{done_block}</done>\n<undone>{undone_block}</undone>"
-
-    def _classify_runtime_error(self, exc: Exception) -> str:
-        """把底层异常归一化为稳定的失败原因。"""
-        if isinstance(exc, TimeoutError):
-            return "timeout"
-        if isinstance(exc, ConnectionError):
-            return "llm_failure"
-        msg = str(exc).lower()
-        if "tool" in msg:
-            return "tool_failure"
-        if any(token in msg for token in ("stream", "connection", "network", "protocol")):
-            return "llm_failure"
-        return "parse_error"
-
-    def _finalize_failure(self, state: ProofState, reason: str) -> ProofState:
-        """统一失败收尾：设置状态并写 FINAL 事件。"""
-        state.status = RunStatus.FAILED
-        state.failure_reason = reason
-        state.final_output = self.finalizer.build_final_output(
-            success=False, solution_text=None, failure_reason=reason,
-        )
-        self._append_raw(state.problem_id, {
-            "agent_node": "FINAL",
-            "turn_id": state.iteration_count,
-            "timestamp": self._now(),
-            "status": state.status.value,
-            "failure_reason": state.failure_reason,
-            "final_output": state.final_output,
-        })
-        self._save_artifact(state)
-        return state
-
-    def _finalize_success(self, state: ProofState, *, turn_id: int) -> ProofState:
-        """统一成功收尾。"""
-        state.status = RunStatus.SUCCESS
-        state.failure_reason = None
-        state.final_output = self.finalizer.build_final_output(
-            success=True, solution_text=state.current_proof, failure_reason=None,
-        )
-        state.final_answer = state.current_proof
-        self._append_raw(state.problem_id, {
-            "agent_node": "FINAL",
-            "turn_id": turn_id,
-            "timestamp": self._now(),
-            "status": state.status.value,
-            "failure_reason": None,
-            "final_output": state.final_output,
-        })
-        self._save_artifact(state)
-        return state
-
-    def _finalize_exhausted(
+    def _save_state_snapshot(
         self,
         state: ProofState,
         *,
-        last_decision: VerificationDecision,
-        last_verification_report: str,
-        turn_id: int,
-    ) -> ProofState:
-        """轮次耗尽后仅调用一次 FINAL，判定 PARTIAL_PROGRESS / BEYOND_CAPABILITY。"""
-        last_decision_value = last_decision.value if hasattr(last_decision, "value") else str(last_decision)
+        last_decision: VerificationDecision | str | None = None,
+    ) -> None:
+        """将当前 ProofState 的快照保存到 ProblemMemory。
 
-        try:
-            final_status, final_verdict, final_solution, final_xml_output = self.pipeline.call_final(
-                problem_text=state.problem_text,
-                current_solution=state.current_proof,
-                last_verifier_decision=last_decision_value,
-                last_verification_report=last_verification_report,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _logger.error("FINAL call failed, fallback to heuristic status: %s", exc)
-            final_status = "PARTIAL_PROGRESS" if state.current_proof else "BEYOND_CAPABILITY"
-            final_verdict = (
-                "达到轮次上限，存在可复用进展。" if state.current_proof else "达到轮次上限，当前方案超出能力范围。"
-            )
-            fallback_undone = (
-                "尚未形成可通过 verifier 的完整证明，需补全关键推理链并消除核心漏洞。"
-                if state.current_proof
-                else "未形成有效解答，缺乏可复用的关键引理与可验证推导。"
-            )
-            fallback_solution = self._normalize_partial_solution(
-                (state.current_proof or "").strip(),
-                fallback_undone,
-            )
-            final_xml_output = (
-                f"<status>{final_status}</status>\n"
-                f"<verdict>{final_verdict}</verdict>\n"
-                f"<solution>{fallback_solution}</solution>"
-            )
-            final_solution = fallback_solution
+        - 如果 `problem_memory` 未初始化，则不执行任何操作。
+        - `last_decision` 可以是枚举（取 `.value`）或字符串，用于记录上一次验证决策。
+        - 构造 `ProblemSnapshot` 并调用 `ProblemMemory.save_state`。
+        """
+        if self.problem_memory is None:
+            return
+        decision_value = None
+        if last_decision is not None:
+            decision_value = last_decision.value if hasattr(last_decision, "value") else str(last_decision)
+        snapshot = ProblemSnapshot(
+            problem_id=state.problem_id,
+            iteration_count=state.iteration_count,
+            status=state.status.value if state.status is not None else "RUNNING",
+            last_decision=decision_value,
+            stages=self._current_stages,
+        )
+        self.problem_memory.save_state(snapshot)
 
-        if final_status == RunStatus.PARTIAL.value:
-            normalized_solution = self._normalize_partial_solution(
-                final_solution,
-                "尚未形成可通过 verifier 的完整证明，需补全关键推理链并消除核心漏洞。",
-            )
-            if normalized_solution != final_solution:
-                final_solution = normalized_solution
-                final_xml_output = (
-                    f"<status>{final_status}</status>\n"
-                    f"<verdict>{final_verdict}</verdict>\n"
-                    f"<solution>{final_solution}</solution>"
-                )
+    @staticmethod
+    def _build_citation_warning_lines(citation_payload: dict, turn_id: int) -> list[str]:
+        """构建对用户可见的引用告警明细行。"""
+        fail_count = int(citation_payload.get("fail_count", 0) or 0)
+        lines = [f"Citation review reported {fail_count} failed item(s) at turn {turn_id}."]
 
-        if final_status == RunStatus.PARTIAL.value:
-            state.status = RunStatus.PARTIAL
-            state.failure_reason = "max_turns_exhausted"
-            state.final_answer = final_solution
-            state.final_output = self.finalizer.build_final_output(
-                success=False,
-                solution_text=state.current_proof,
-                failure_reason=state.failure_reason,
-                partial=True,
-                assessment_output=final_xml_output,
-                preserve_xml=True,
-            )
-        else:
-            state.status = RunStatus.FAILED
-            state.failure_reason = "beyond_capability"
-            state.final_output = self.finalizer.build_final_output(
-                success=False,
-                solution_text=state.current_proof,
-                failure_reason=state.failure_reason,
-                assessment_output=final_xml_output,
-                preserve_xml=True,
-            )
+        items = citation_payload.get("items") if isinstance(citation_payload, dict) else []
+        if not isinstance(items, list):
+            return lines
 
-        self._append_raw(state.problem_id, {
-            "agent_node": "FINAL",
-            "turn_id": turn_id,
-            "timestamp": self._now(),
-            "status": state.status.value,
-            "failure_reason": state.failure_reason,
-            "last_verifier_decision": last_decision_value,
-            "final_status": final_status,
-            "final_verdict": final_verdict,
-            "xml_output": final_xml_output,
-            "final_output": state.final_output,
-        })
-        self._save_artifact(state)
-        return state
+        idx = 1
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("passed") is True:
+                continue
 
-    def _route_on_decision(self, decision: VerificationDecision, state: ProofState) -> str:
-        """根据 Verifier 裁决返回下一节点名。"""
-        if decision == VerificationDecision.CORRECT:
-            return "FINAL"
-        if decision == VerificationDecision.MINOR_FLAW:
-            return "REVISER"
-        if decision == VerificationDecision.CRITICAL_FLAW:
-            return "GENERATOR"
-        state.failure_reason = "parse_error"
-        return "FINAL"
+            cite_path = str(item.get("cite") or item.get("path") or "unknown_path")
+            reason = str(item.get("reason") or "UNKNOWN_REASON")
+            detail = str(item.get("detail") or item.get("message") or "").strip()
+            line = f"[{idx}] {cite_path}: {reason}"
+            if detail:
+                line += f" ({detail})"
+            lines.append(line)
+            idx += 1
+        return lines
 
-    def _record_solution_node(
+    def _execute_solution_node(
         self,
         state: ProofState,
         *,
         node: str,
         turn_id: int,
-        content: str | None,
-        reasoning_content: str | None,
+        verification: str | None = None,
     ) -> None:
-        """统一写入 GENERATOR/REVISER 的状态与 raw 事件。"""
-        state.current_proof = content or ""
-        state.history.append(VerificationLog(
-            turn_id=turn_id, agent_node=node,
-            content=content, extracted_cot=reasoning_content,
-        ))
-        self._append_raw(state.problem_id, {
-            "agent_node": node,
-            "turn_id": turn_id,
-            "timestamp": self._now(),
-            "content": content,
-            "reasoning_content": reasoning_content,
-            **({"problem_text": state.problem_text, "ground_truth": state.ground_truth}
-               if node == "GENERATOR" and turn_id == 0 else {}),
-        })
+        """执行一个解答节点并记录其输出。
 
-    def _execute_generator_node(
-        self, state: ProofState, *, turn_id: int, lesson: str | None,
-    ) -> None:
-        """执行 Generator 节点并记录事件。"""
-        resp = self.pipeline.call_generator(
-            problem_text=state.problem_text,
-            lesson=lesson,
-        )
-        self._record_solution_node(
-            state, node="GENERATOR", turn_id=turn_id,
-            content=resp.content, reasoning_content=resp.reasoning_content,
-        )
+        - node: 'GENERATOR' 或 'REVISER'。
+        - 对于 GENERATOR，优先尝试从 `context_builder` 获取引理上下文，否则从 `problem_memory` 列表获取。
+        - 对于 REVISER，同样注入引理上下文，帮助小修阶段参考既有引理与证明。
+        - 调用 `pipeline.generator_agent.run` 或 `pipeline.reviser_agent.run` 获取 `resp`，提取 `content`、`reasoning_content` 与可选 `tool_calls_trace`。
+        - 直接更新 `state.current_proof` 并写入原始事件日志。
+        - 执行完毕后调用 record_stage_event() 记录该阶段到state.json。
+        """
+        execution_error: str | None = None
+        try:
+            if node == "GENERATOR":
+                lemma_context_items: list[str] | None = None
+                if self.context_builder is not None:
+                    lemma_context_items = self.context_builder._build_lemma_context(item_limit=12)
+                elif self.problem_memory is not None:
+                    lemma_context_items = self.problem_memory.list_lemma_context_items(limit=12)
+                resp = self.pipeline.generator_agent.run(
+                    problem_text=state.problem_text,
+                    verification=verification,
+                    lemma_context_items=lemma_context_items,
+                )
+            else:
+                lemma_context_items: list[str] | None = None
+                if self.context_builder is not None:
+                    lemma_context_items = self.context_builder._build_lemma_context(item_limit=12)
+                elif self.problem_memory is not None:
+                    lemma_context_items = self.problem_memory.list_lemma_context_items(limit=12)
+                resp = self.pipeline.reviser_agent.run(
+                    problem_text=state.problem_text,
+                    previous_solution=state.current_proof,
+                    verification=verification or "",
+                    lemma_context_items=lemma_context_items,
+                )
 
-    def _execute_reviser_node(
-        self, state: ProofState, *, turn_id: int, verification_report: str,
-    ) -> None:
-        """执行 Reviser 节点并记录事件。"""
-        resp = self.pipeline.call_reviser(
-            problem_text=state.problem_text,
-            previous_solution=state.current_proof,
-            verification_report=verification_report,
-        )
-        self._record_solution_node(
-            state, node="REVISER", turn_id=turn_id,
-            content=resp.content, reasoning_content=resp.reasoning_content,
-        )
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            reasoning_content = getattr(resp, "reasoning_content", "")
+            tool_calls_trace = getattr(resp, "tool_calls_trace", [])
+            state.current_proof = content or ""
+            event_payload = {
+                "node": node,
+                "turn_id": turn_id,
+                "timestamp": self._now(),
+                "content": content,
+                "tool_calls_trace": tool_calls_trace or [],
+                **(
+                    {"problem_text": state.problem_text, "ground_truth": state.ground_truth}
+                    if node == "GENERATOR" and turn_id == 0
+                    else {}
+                ),
+            }
+            if node != "REVISER":
+                event_payload["reasoning_content"] = reasoning_content
+            self.problem_memory.append_event(event_payload)
+        except Exception as exc:  # noqa: BLE001
+            execution_error = f"{type(exc).__name__}: {str(exc)}"
+            raise
 
-    def _execute_verifier_node(self, state: ProofState, *, turn_id: int):
-        """执行 Verifier 节点并记录事件，返回 (decision, verification_report)。"""
-        verification_text, decision, verification_report, tool_trace, phase1 = \
-            self.pipeline.call_verifier(
-                problem_text=state.problem_text, proof_text=state.current_proof,
+        # 记录该阶段的执行结果到state.json
+        if self.problem_memory is not None:
+            summary = f"{node} at turn {turn_id}: {len(state.current_proof)} characters"
+            self.problem_memory.record_stage_event(
+                stage_name=node,
+                turn_id=turn_id,
+                status="SUCCESS" if execution_error is None else "FAILED",
+                detail=summary,
+                error=execution_error,
+                timestamp=self._now(),
+                event_detail={
+                    "content_length": len(state.current_proof),
+                    "has_reasoning": bool(getattr(resp, "reasoning_content", "")),
+                } if execution_error is None else None,
             )
-        state.history.append(VerificationLog(
-            turn_id=turn_id, agent_node="VERIFIER",
-            full_verification_text=verification_text, decision=decision,
-            verification_report=verification_report,
-            tool_calls_trace=tool_trace, phase1_analysis=phase1,
-        ))
-        self._append_raw(state.problem_id, {
-            "agent_node": "VERIFIER",
-            "turn_id": turn_id,
-            "timestamp": self._now(),
-            "decision": decision.value if hasattr(decision, "value") else str(decision),
-            "verification_report": verification_report,
-            "tool_calls_trace": tool_trace,
-            "phase1_analysis": phase1,
-            "full_verification_text": verification_text,
-        })
-        return decision, verification_report
+
+
+    def _execute_verifier_node(self, state: ProofState, *, turn_id: int) -> tuple[VerificationDecision, str, str]:
+        """调用验证器并处理验证结果与产物。
+
+        返回:
+        - tuple(decision, verification, verifier_response)
+
+        处理流程:
+        - 调用 `pipeline.verifier_agent.run` 获取原始验证文本（verifier_response）。
+        - 解析 verifier_response 提取 decision 与 verification。
+        - 使用解析器提取 `verified_lemmas` 与 `citation_review`。
+        - 若 `citation_review` 为 JSON 且包含失败计数，则生成 WARNING 事件并记录到 `warning_messages`。
+        - 将规范化的 verified lemmas（如果有）写入 `ProblemMemory` 以供后续引用。
+        - 把完整的验证信息写入原始事件日志并返回决策与报告。
+        - 执行完毕后调用 record_stage_event() 记录该阶段到state.json。
+        """
+        verification_error: str | None = None
+        decision = VerificationDecision.CRITICAL_FLAW
+        verification = ""
+        verified_lemmas: list[str] = []
+        citation_fail_count = 0
+        citation_payload: dict = {}
+        
+        try:
+            # 调用 verifier 获取原始输出
+            verifier_response, tool_trace, preliminary_analysis = self.pipeline.verifier_agent.run(
+                problem_text=state.problem_text,
+                proof_text=state.current_proof,
+            )
+
+            # 解析：提取 decision 和 verification
+            decision = parse_decision(verifier_response)
+            
+            # 提取 verification（报告摘要）
+            verification = extract_xml_tag(verifier_response, "verification").strip()
+            
+            # 提取 verified_lemmas（可能有多个）
+            verified_lemmas = [
+                item for item in extract_xml_tags(verifier_response, "verified_lemmas")
+                if item and item.strip().upper() != "NONE"
+            ]
+            
+            # 提取并解析 citation_review
+            citation_review = extract_xml_tag(verifier_response, "citation_review").strip()
+            if citation_review and citation_review.upper() != "NONE":
+                try:
+                    citation_payload = json.loads(citation_review)
+                    citation_fail_count = int(citation_payload.get("fail_count", 0) or 0)
+                except (TypeError, ValueError):
+                    citation_fail_count = 0
+                    citation_payload = {}
+
+            if citation_fail_count > 0:
+                warning_lines = self._build_citation_warning_lines(citation_payload, turn_id)
+                self.warning_messages.extend(warning_lines)
+                self.problem_memory.append_event(
+                    {
+                        "node": "WARNING",
+                        "turn_id": turn_id,
+                        "timestamp": self._now(),
+                        "warning_type": "citation_review",
+                        "warning": warning_lines[0],
+                        "fail_count": citation_fail_count,
+                        "warning_details": warning_lines[1:],
+                    },
+                )
+
+            if self.problem_memory is not None:
+                for lemma in verified_lemmas:
+                    normalized_lemma = (lemma or "").strip()
+                    if normalized_lemma:
+                        self.problem_memory.add_lemma(normalized_lemma)
+
+            self.problem_memory.append_event(
+                {
+                    "node": "VERIFIER",
+                    "turn_id": turn_id,
+                    "timestamp": self._now(),
+                    "decision": decision.value if hasattr(decision, "value") else str(decision),
+                    "verification": verification,
+                    "tool_calls_trace": tool_trace,
+                    "preliminary_analysis": preliminary_analysis,
+                    "verifier_response": verifier_response,
+                    "verified_lemmas": verified_lemmas,
+                    "citation_review": citation_review,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            verification_error = f"{type(exc).__name__}: {str(exc)}"
+            raise
+        finally:
+            # 记录该阶段的执行结果到state.json
+            if self.problem_memory is not None:
+                decision_str = decision.value if hasattr(decision, "value") else str(decision)
+                summary = f"Verifier decision: {decision_str}"
+                self.problem_memory.record_stage_event(
+                    stage_name="VERIFIER",
+                    turn_id=turn_id,
+                    status="SUCCESS" if verification_error is None else "FAILED",
+                    detail=summary,
+                    error=verification_error,
+                    timestamp=self._now(),
+                    event_detail={
+                        "decision": decision_str,
+                        "has_verified_lemmas": bool(verified_lemmas) if verification_error is None else None,
+                        "has_citation_issues": bool(citation_fail_count) if verification_error is None else None,
+                    } if verification_error is None else None,
+                )
+
+        return decision, verification, verifier_response
+
 
     def run(self, state: ProofState) -> ProofState:
-        """执行调度流程：GENERATOR → VERIFIER → (REVISER|GENERATOR) → ... → FINAL。
+        """外部调用入口：为指定问题运行完整的生成—验证—修订回合并返回最终状态。
 
-        轮次以 Verifier 运行次数计算，最多运行 max_turns 次。
-        轮次耗尽时根据最后裁决和解答内容区分结局（见 _finalize_exhausted）。
+        行为:
+        - 初始化 `ProblemMemory`（并设置为当前上下文），重置警告列表并保存初始状态快照。
+        - 记录 `RUN_START` 事件以标记运行的开始。
+        - 构造 `FinalizerEngine` 并直接执行主循环。
+        - 运行异常时抛出友好错误提示；运行结束后清理当前问题内存引用。
         """
-        self._append_raw(state.problem_id, {
-            "agent_node": "RUN_START",
-            "turn_id": -1,
-            "timestamp": self._now(),
-            "problem_text": state.problem_text,
-            "ground_truth": state.ground_truth,
-            "max_turns": self.max_turns,
-        })
+        def _finish(result: ProofState) -> ProofState:
+            set_current_problem_memory(None)
+            return result
 
-        # 初始 Generator 调用（turn=0）
+        def _raise_runtime(stage_name: str, exc: Exception) -> None:
+            set_current_problem_memory(None)
+            raise RuntimeError(f"运行失败（{stage_name}）：{type(exc).__name__}: {exc}") from exc
+
+        # 初始化 ProblemMemory 并构建 ContextBuilder 与 FinalizerEngine
+        self.problem_memory = ProblemMemory(problem_id=state.problem_id, runs_root=self.runs_root)
+        self.problem_memory.init_dirs()
+        self.warning_messages = []
+        self._current_stages = []
+        self.context_builder = ContextBuilder(self.problem_memory)
+        self.finalizer_engine = FinalizerEngine(
+            problem_memory=self.problem_memory,
+            warnings=self.warning_messages,
+            runs_root=self.runs_root,
+        )
+        set_current_problem_memory(self.problem_memory)
+        self._save_state_snapshot(state)
+
+        self.problem_memory.append_event(
+            {
+                "node": "RUN_START",
+                "turn_id": 0,
+                "timestamp": self._now(),
+                "problem_text": state.problem_text,
+                "ground_truth": state.ground_truth,
+                "max_turns": self.max_turns,
+            },
+        )
+
         try:
-            self._execute_generator_node(state, turn_id=0, lesson=None)
+            self._execute_solution_node(state, node="GENERATOR", turn_id=0, verification=None)
+            self._current_stages.append(StageSnapshot(stage_name="GENERATOR", turn_id=0, status="COMPLETED"))
         except Exception as exc:  # noqa: BLE001
-            _logger.error("Initial generator call failed: %s", exc)
-            return self._finalize_failure(state, self._classify_runtime_error(exc))
+            _raise_runtime("GENERATOR@turn0", exc)
+
+        decision = VerificationDecision.CRITICAL_FLAW  # 初始默认决策，确保未进入循环时也能完整运行
+        verification = ""  # 同上，确保即使验证器完全失败也能进入循环并正确走 finalizer 的非成功分支。
+        verification_text = ""
 
         for turn in range(1, self.max_turns + 1):
             state.iteration_count = turn
             try:
-                decision, verification_report = self._execute_verifier_node(state, turn_id=turn)
-            except TimeoutError:
-                return self._finalize_failure(state, "timeout")
-            except ValueError:
-                return self._finalize_failure(state, "parse_error")
+                decision, verification, verification_text = self._execute_verifier_node(state, turn_id=turn)
+                decision_str = decision.value if hasattr(decision, "value") else str(decision)
+                self._current_stages.append(StageSnapshot(
+                    stage_name="VERIFIER", turn_id=turn, status="COMPLETED", detail=decision_str
+                ))
+            except TimeoutError as exc:
+                _raise_runtime("VERIFIER_TIMEOUT", exc)
             except Exception as exc:  # noqa: BLE001
-                return self._finalize_failure(state, self._classify_runtime_error(exc))
+                _raise_runtime("VERIFIER", exc)
 
-            next_node = self._route_on_decision(decision, state)
+            self._save_state_snapshot(state, last_decision=decision)
+            next_node = self.recovery_policy.route_on_decision(decision)
 
             if next_node == "FINAL" and decision == VerificationDecision.CORRECT:
-                return self._finalize_success(state, turn_id=turn)
-
-            if next_node == "FINAL":
-                return self._finalize_failure(state, state.failure_reason or "parse_error")
-
-            # 最后一轮：直接进入轮次耗尽处理，不再调用 GENERATOR/REVISER。
-            if turn == self.max_turns:
-                return self._finalize_exhausted(
+                result = self.finalizer_engine.finalize_success(
                     state,
-                    last_decision=decision,
-                    last_verification_report=verification_report,
                     turn_id=turn,
+                    last_verifier_text=verification_text,
+                    stages=self._current_stages,
                 )
+                return _finish(result)
 
-            if next_node == "REVISER":
+            if next_node == "REVISER" and turn < self.max_turns:
                 try:
-                    self._execute_reviser_node(
-                        state, turn_id=turn, verification_report=verification_report,
+                    self._execute_solution_node(
+                        state,
+                        node="REVISER",
+                        turn_id=turn,
+                        verification=verification,
                     )
+                    self._current_stages.append(StageSnapshot(stage_name="REVISER", turn_id=turn, status="COMPLETED"))
                 except Exception as exc:  # noqa: BLE001
-                    return self._finalize_failure(state, self._classify_runtime_error(exc))
+                    _raise_runtime("REVISER", exc)
                 continue
 
-            # next_node == "GENERATOR"：带着验证报告重新生成候选解。
-            try:
-                self._execute_generator_node(
-                    state, turn_id=turn, lesson=verification_report,
-                )
-            except Exception as exc:  # noqa: BLE001
-                _logger.error("Generator call at turn %d failed: %s", turn, exc)
-                return self._finalize_failure(state, self._classify_runtime_error(exc))
+            if next_node == "GENERATOR" and turn < self.max_turns:
+                try:
+                    self._execute_solution_node(
+                        state,
+                        node="GENERATOR",
+                        turn_id=turn,
+                        verification=verification,
+                    )
+                    self._current_stages.append(StageSnapshot(stage_name="GENERATOR", turn_id=turn, status="COMPLETED"))
+                except Exception as exc:  # noqa: BLE001
+                    _raise_runtime("GENERATOR", exc)
+                continue
 
-        # 理论上不会到达（循环内每个出口都已 return），此处作为防御性兜底。
-        return self._finalize_failure(state, "beyond_capability")
+        # 达到最大轮次后，统一走 finalizer 的非成功收敛入口。
+        result = self.finalizer_engine.finalize_exhausted(
+            state,
+            last_decision=decision,
+            last_verification=verification,
+            last_verifier_text=verification_text,
+            stages=self._current_stages,
+        )
+        return _finish(result)

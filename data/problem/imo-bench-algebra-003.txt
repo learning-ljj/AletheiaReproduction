@@ -1,0 +1,7 @@
+Find all functions $g:\mathbb{R}\rightarrow\mathbb{R}$ which is not a linear function and satisfies
+
+\[
+4g\left(x^{2}y+y^{2}z+z^{2}x\right)-(g(y)-g(x))(g(z)-g(y))(g(x)-g(z))=4g\left(xy^{2}+yz^{2}+zx^{2}\right)
+\]
+
+for all real numbers $x,y,z$.

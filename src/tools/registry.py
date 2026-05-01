@@ -1,122 +1,62 @@
 """工具注册表：OpenAI Function Calling schema 与统一执行分发。"""
 
-import json
+from typing import Callable
 
+# 还没把 Search 功能改为 Agent，现在是 pipeline , 在 tools/search_papers/
+from src.tools.search_papers.searcher import SearchPipelne
+from src.tools.review_citation import review_citation
+
+from src.memory.problem_memory import get_current_problem_memory
+from src.tools.artifact_reader import read_artifact
 from src.tools.code_executor import run_python
-from src.tools.web_search import read_arxiv_latex, search_arxiv
-from src.tools.wiki_search import search_wikipedia
+from src.tools.format import (
+    format_tool_error,
+    format_tool_success,
+)
 
-# ------------------------------------------------------------------
-# OpenAI function calling 兼容的 tools schema
-# ------------------------------------------------------------------
 
-_TOOL_SCHEMAS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "run_python",
-            "description": (
-                "Execute Python code and return stdout/stderr. Use this to verify arithmetic, algebraic, or numerical steps. "
-                "Before writing code, verify API availability in standard library modules; do NOT call non-existent functions (e.g., `math.phi`). "
-                "If Euler's totient is needed, implement a local `phi(n)` helper in the snippet. "
-                "Requirements for checks involving fractions or rational expressions:\n"
-                "- For formulas containing fractions or rational expressions, do NOT perform comparisons by converting the theoretical expression into integer division using `//`.\n"
-                "- Prefer exact arithmetic using `fractions.Fraction` or compare by cross-multiplication to ensure precise equality checks.\n"
-                "- If rounding or floor operations are intentionally used (e.g., `//` or `math.floor`), explicitly state in the output that this is part of the problem definition and not an implementation approximation.\n"
-                "Code snippets must be self-contained and not rely on prior execution state; always print labeled final checked values for reproducibility. "
-                "For script-like checks, include a short PASS/FAIL summary line. Avoid OOM or exponential-time brute-force."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Python code to execute.",
-                    }
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_wikipedia",
-            "description": (
-                "Search Wikipedia for a concept, theorem, or definition. "
-                "Use this FIRST for general mathematical concepts, named theorems, or "
-                "well-known results before trying search_arxiv. "
-                "Use precise queries (single theorem name or concept), not keyword soup. "
-                "If the first result is off-topic, reformulate once with a clearer term. "
-                "Returns the cleaned page content."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (e.g. theorem name, concept).",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_arxiv",
-            "description": (
-                "Search for academic papers on arXiv by query. "
-                "Use this ONLY for specific academic paper citations or when "
-                "search_wikipedia does not provide sufficient information. "
-                "For general named theorems or well-known results, prefer search_wikipedia first. "
-                "Use concrete paper-oriented queries (title fragment / author / exact topic) rather than "
-                "broad keyword concatenation. "
-                "Returns a list of papers with arXiv ID, title, authors, published date, "
-                "and abstract snippet. If no results are found, flag the citation as a "
-                "potential hallucination."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (e.g. paper title, theorem name, author).",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_arxiv_latex",
-            "description": (
-                "Download an arXiv paper's LaTeX source and extract its abstract and key "
-                "sections (Main Results / Theorems / Key Findings / Conclusion). "
-                "Use this AFTER search_arxiv confirms a paper exists, to verify theorem "
-                "statements, preconditions, and correct usage in the solution. "
-                "Returns up to 6,000 characters of the extracted key sections; "
-                "if no structured sections are found, returns the first 6,000 characters."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "arxiv_id": {
-                        "type": "string",
-                        "description": "The arXiv ID of the paper (e.g. '2501.12345v1').",
-                    }
-                },
-                "required": ["arxiv_id"],
-            },
-        },
-    },
-]
+class ToolExecutor:
+    """按工具名执行统一包络的工具调用器。"""
+
+    def __init__(self, source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None):
+        self.source_handlers = dict(source_handlers or {})
+
+    def __call__(self, function_name: str, arguments: dict) -> str:
+        if function_name not in _TOOL_MAP:
+            available = list(_TOOL_MAP.keys())
+            return format_tool_error(
+                tool=function_name,
+                error_code="UNKNOWN_TOOL",
+                message=f"Unknown tool: {function_name!r}.",
+                retryable=False,
+                detail={"available": available},
+            )
+
+        normalized_arguments = arguments if isinstance(arguments, dict) else {}
+        try:
+            if function_name == "call_searcher":
+                return _format_call_searcher(
+                    source_handlers=self.source_handlers,
+                    **normalized_arguments,
+                )
+            return _TOOL_MAP[function_name](**normalized_arguments)
+        except BaseException as exc:
+            # 这里刻意扩大捕获范围：包括 KeyboardInterrupt。目标是把“中断类错误”也转换为结构化信息交给 LLM，而不是让整个主链路直接崩掉。
+            if isinstance(exc, (SystemExit, GeneratorExit)):
+                raise
+
+            retryable = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or isinstance(exc, KeyboardInterrupt)
+            return format_tool_error(
+                tool=function_name,
+                error_code="TOOL_RUNTIME_EXCEPTION",
+                message=f"{function_name} raised {type(exc).__name__}: {exc}",
+                retryable=retryable,
+                detail={"attempt": 1, "max_attempts": 1},
+            )
+
 
 def _format_run_python(code: str) -> str:
-    """执行代码并格式化返回结果为字符串。"""
+    """执行代码并返回统一成功包络。"""
     result = run_python(code)
     parts = []
     if result["stdout"]:
@@ -126,57 +66,99 @@ def _format_run_python(code: str) -> str:
     if not parts:
         parts.append("(no output)")
     parts.append(f"exit_code: {result['exit_code']}")
-    return "\n".join(parts)
+    rendered = "\n".join(parts)
+    return format_tool_success(
+        tool="run_python",
+        data={
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "exit_code": result.get("exit_code", 1),
+            "rendered": rendered,
+        },
+    )
 
 
-def _format_search_wikipedia(query: str) -> str:
-    """执行 Wikipedia 搜索并返回结果字符串。"""
-    return search_wikipedia(query)
+def _format_call_searcher(
+    *,
+    source_handlers: dict[str, Callable[[str, int], list[dict]]] | None = None,
+    query: str | None = None,
+    query_bundle: list[str] | None = None,
+    **extra_args,
+) -> str:
+    """调用 SearchPipelne 并返回检索摘要与落盘路径。"""
+    problem_memory = get_current_problem_memory()
+    if problem_memory is None:
+        return format_tool_error(
+            tool="call_searcher",
+            error_code="NO_PROBLEM_MEMORY",
+            message="ProblemMemory context is missing for call_searcher.",
+            retryable=False,
+        )
+    if not source_handlers:
+        return format_tool_error(
+            tool="call_searcher",
+            error_code="NO_SEARCH_SOURCES_CONFIGURED",
+            message="Searcher source handlers are not configured.",
+            retryable=False,
+        )
+
+    search_pipeline = SearchPipelne(
+        problem_memory=problem_memory,
+        source_handlers=source_handlers,
+    )
+
+    # 重点说明：search_pipeline.run 不仅会返回 papers，也会返回 errors/recovered_errors。
+    # 这些错误字段会原样回传给 LLM，帮助模型决定下一步动作，而不是像传统流程那样“空结果即静默降级”。
+    result = search_pipeline.run(query=query, query_bundle=query_bundle)
+    has_errors = bool(result.get("has_errors"))
+
+    payload: dict = {
+        "query": query,
+        "query_bundle": query_bundle or [],
+        "paper_count": result.get("count", 0),
+        "stages": result.get("stages", {}),
+        "papers": result.get("papers", []),
+        "has_errors": has_errors,
+        "error_count": int(result.get("error_count", 0) or 0),
+        "errors": result.get("errors", []),
+        "recovered_errors": result.get("recovered_errors", []),
+        "llm_action_hint": result.get("llm_action_hint", ""),
+    }
+    if extra_args:
+        payload["extra_args"] = extra_args
+    return format_tool_success(tool="call_searcher", data=payload)
 
 
-def _format_search_arxiv(query: str) -> str:
-    """执行 arXiv 搜索并序列化结果为 JSON 字符串。"""
-    return json.dumps(search_arxiv(query), ensure_ascii=False)
+def _format_read_artifact(path: str, layer: int) -> str:
+    """按层读取 artifact 文档（artifact_reader 内部已统一包络）。"""
+    return read_artifact(path=path, layer=layer)
 
 
-_ARXIV_LATEX_MAX_CHARS = 6_000  # 限制 LaTeX 关键章节返回量（摘要+主要结果），避免填满 LLM 上下文窗口
-# 说明：read_arxiv_latex 现在调用 _extract_key_sections 提取摘要和关键章节，
-# 6000 字符已足够包含 abstract + 一两个主要定理/结果段落。
+def _format_review_citation(
+    cites: list[str] | None = None,
+    **extra_args,
+) -> str:
+    """调用引用内容检查工具，并返回统一包络。"""
+    problem_memory = get_current_problem_memory()
+    if problem_memory is None:
+        return format_tool_error(
+            tool="review_citation",
+            error_code="NO_PROBLEM_MEMORY",
+            message="ProblemMemory context is missing for review_citation.",
+            retryable=False,
+        )
 
-
-def _format_read_arxiv_latex(arxiv_id: str) -> str:
-    """下载并返回截断后的 LaTeX 源码（限制 30,000 字符）。"""
-    return read_arxiv_latex(arxiv_id, max_chars=_ARXIV_LATEX_MAX_CHARS)
+    review = review_citation(problem_memory=problem_memory, cites=cites or [])
+    payload: dict = dict(review)
+    if extra_args:
+        payload["extra_args"] = extra_args
+    return format_tool_success(tool="review_citation", data=payload)
 
 
 # 函数名 → 可调用对象的映射
 _TOOL_MAP: dict = {
     "run_python": _format_run_python,
-    "search_wikipedia": _format_search_wikipedia,
-    "search_arxiv": _format_search_arxiv,
-    "read_arxiv_latex": _format_read_arxiv_latex,
+    "call_searcher": _format_call_searcher,
+    "read_artifact": _format_read_artifact,
+    "review_citation": _format_review_citation,
 }
-
-
-# ------------------------------------------------------------------
-# 公开接口
-# ------------------------------------------------------------------
-
-
-def get_tool_schemas() -> list[dict]:
-    """返回 OpenAI function calling 格式的 tools 列表。"""
-    return _TOOL_SCHEMAS
-
-
-def execute_tool(function_name: str, arguments: dict) -> str:
-    """根据 function_name 路由到对应工具函数，返回字符串结果。
-
-    未知工具或调用异常时返回错误描述字符串，不抛出异常，避免中断验证循环。
-    """
-    if function_name not in _TOOL_MAP:
-        available = list(_TOOL_MAP.keys())
-        return f"[TOOL ERROR] Unknown tool: {function_name!r}. Available: {available}"
-    try:
-        return _TOOL_MAP[function_name](**arguments)
-    except Exception as exc:
-        return f"[TOOL ERROR] {function_name} raised {type(exc).__name__}: {exc}"
