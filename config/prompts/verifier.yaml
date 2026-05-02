@@ -112,12 +112,13 @@ verifier:
     输出必须包含以下四个核心标签块（标签必须存在，内容可写 NONE）：
 
     <verdict>
-    CORRECT 或 MINOR_FLAW 或 CRITICAL_FLAW
+    这里填写的内容只能是 CORRECT 或 MINOR_FLAW 或 CRITICAL_FLAW 三选一，不能有其他值。
     </verdict>
 
     <verification>
+    请根据上述定义和裁定，在开头给出简要裁定理由总结。
 
-    这里写完整详细验证日志，格式如下：
+    再写完整详细验证日志，格式如下：
     存在关键定理应用未验证前置条件的严重逻辑错误
     * 位置：Step 3。
     * 内容：通过交换极限和积分，我们得到……

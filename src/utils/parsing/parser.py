@@ -38,18 +38,23 @@ def extract_xml_tags(text: str, tag: str) -> list[str]:
 
 def parse_decision(verification_text: str) -> VerificationDecision:
 	"""从 Verifier 完整输出中解析三路裁决。"""
-	verdict_text = extract_xml_tag(verification_text, "verdict")
-	if verdict_text:
-		verdict_upper = verdict_text.strip().upper()
-		if verdict_upper == VerificationDecision.CRITICAL_FLAW.value:
-			return VerificationDecision.CRITICAL_FLAW
-		if verdict_upper == VerificationDecision.MINOR_FLAW.value:
-			return VerificationDecision.MINOR_FLAW
-		if verdict_upper == VerificationDecision.CORRECT.value:
-			return VerificationDecision.CORRECT
+	verdict = extract_xml_tag(verification_text, "verdict")
+	if verdict:
+		# 有时 <verdict> 中会包含额外解释文字，或把关键词写在段落末尾。
+		# 尝试在文本中查找已知的判定关键词（不区分大小写），优先取最后出现的关键词。
+		verdict_text = re.findall(r"\b(CRITICAL_FLAW|MINOR_FLAW|CORRECT)\b", verdict, flags=re.IGNORECASE)
+		if verdict_text:
+			verdict_upper = verdict_text[-1].upper()
+			if verdict_upper == VerificationDecision.CRITICAL_FLAW.value:
+				return VerificationDecision.CRITICAL_FLAW
+			if verdict_upper == VerificationDecision.MINOR_FLAW.value:
+				return VerificationDecision.MINOR_FLAW
+			if verdict_upper == VerificationDecision.CORRECT.value:
+				return VerificationDecision.CORRECT
+
 		raise ParseContractError(
 			"invalid_verdict",
-			f"Invalid <verdict> value: {verdict_text!r}",
+			f"Invalid <verdict> value: {verdict!r}",
 		)
 
 	raise ParseContractError(

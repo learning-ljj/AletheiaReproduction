@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.core.finalizer import build_final_output
 from src.memory.problem_memory import ProblemMemory
+from src.utils.logging.logger import save_final_output_markdown
 from src.utils.parsing.reference_builder import (
     build_references,
     export_references_bibtex,
@@ -71,3 +72,14 @@ def test_bibtex_export_from_references(tmp_path: Path) -> None:
     text = bib_path.read_text(encoding="utf-8")
     assert "@misc{" in text
     assert "howpublished" in text
+
+
+def test_final_output_markdown_normalizes_display_math(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    output_path = save_final_output_markdown(
+        problem_id="p-math",
+        final_output="Before \\[ a^2 + b^2 = c^2 \\] After",
+        runs_root=runs_root,
+    )
+
+    assert output_path.read_text(encoding="utf-8") == "Before $$ a^2 + b^2 = c^2 $$ After\n"
