@@ -1,6 +1,6 @@
 ﻿# AletheiaReproduction
 
-> Google DeepMind [Aletheia](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) 的独立 Python 复现，面向本地实验、数学推理调试与批量评测。
+> Google DeepMind [Aletheia](https://github.com/google-deepmind/superhuman-reasoning/tree/main/aletheia) 的独立 Python 简单复现和魔改。
 
 ## 概览
 
@@ -36,6 +36,7 @@ AletheiaReproduction/
 │   ├── models/              # LLM client 与传输层
 │   ├── tools/               # 工具注册、搜索、代码执行、引用检查
 │   └── utils/               # 解析、日志、评测等通用模块
+├── runs/                    # 每题运行目录，包含 history.jsonl、state.json、artifact/
 └── data/
     ├── imobench/            # IMO Bench CSV 数据集
     └── logs/                # 旧日志与样例记录

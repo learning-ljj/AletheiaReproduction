@@ -1,0 +1,610 @@
+第三章 系统总体设计
+
+本章从软件系统设计者的视角，说明本项目如何把“自然语言数学解答”做成一个可迭代、可验证、可追踪的工程系统。这里不做空泛描述，所有关键结论都给出代码原文摘抄与精确行号范围。
+
+3.1 设计目标与原则
+
+本系统的设计目标可以概括为四条：第一，必须支持闭环迭代，而不是一次性输出；第二，流程控制与内容生成分离，避免把全部决策混在一个提示词里；第三，全过程落盘，支持复盘和审计；第四，允许把中间引理与错误信息沉淀下来，形成可复用资产。
+
+代码摘抄 3-1（入口层把“读取-配置-运行”分开）
+文件：main.py
+行号：92-117
+内容：
+    def main(argv: list[str] | None = None) -> int:
+        _configure_stdio_utf8()
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        ...
+        config = load_config()
+        prompts = load_prompts()
+        ...
+        agent = AletheiaAgent(config, prompts)
+
+说明：入口层先做参数和配置，再创建 Agent，职责边界很清楚。它不直接参与数学推理，只负责把问题送入后续编排流程。
+
+代码摘抄 3-2（配置层支持环境变量替换与目录化提示词）
+文件：src/core/config.py
+行号：9-30，51-65
+内容：
+    def _substitute_env_vars(obj):
+        if isinstance(obj, str):
+            return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), obj)
+        ...
+
+    def load_config(path: str = "config/settings.yaml") -> dict:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        return _substitute_env_vars(raw)
+
+    def load_prompts(path: str = "config/prompts") -> dict:
+        target = Path(path)
+        if target.is_dir():
+            prompts = _load_prompt_dir(target)
+            if prompts:
+                return prompts
+
+说明：配置是外部化的，且支持环境注入，不是写死在代码里。这使系统可以在不改业务逻辑的前提下调整模型参数、提示词和运行策略。
+
+代码摘抄 3-3（高层门面只做装配，不做推理细节）
+文件：src/core/agent.py
+行号：117-152
+内容：
+    class AletheiaAgent:
+        def __init__(self, config: dict, prompts: dict, stream_file=_STREAM_UNSET):
+            self.llm_client = create_llm_client(config, stream_file=stream_file)
+            ...
+            pipeline = AgentPipeline(...)
+            self.orchestrator = Orchestrator(...)
+
+        def solve(self, problem_id: str, problem_text: str, ground_truth: str | None = None) -> ProofState:
+            state = ProofState(problem_id=problem_id, problem_text=problem_text, ground_truth=ground_truth)
+            return self.orchestrator.run(state)
+
+说明：AletheiaAgent 的角色是系统门面，核心价值是“装配并委托”，而不是把流程细节写在一个大函数里。
+
+3.2 系统分层架构
+
+从代码结构看，本系统可分为入口层、编排层、执行层、记忆层、工具层和终态收口层。下面给出每层对应的代码证据。
+
+代码摘抄 3-4（编排层负责主流程与状态转移）
+文件：src/core/orchestrator.py
+行号：297-408
+内容：
+    def run(self, state: ProofState) -> ProofState:
+        self.problem_memory = ProblemMemory(...)
+        self.context_builder = ContextBuilder(self.problem_memory)
+        self.finalizer_engine = FinalizerEngine(...)
+        ...
+        self._execute_solution_node(state, node="GENERATOR", turn_id=0, verification=None)
+        ...
+        for turn in range(1, self.max_turns + 1):
+            decision, verification, verification_text = self._execute_verifier_node(state, turn_id=turn)
+            next_node = self.recovery_policy.route_on_decision(decision)
+
+说明：编排器是控制中枢，负责“先生成、再验证、按判决转移、最后收口”。
+
+代码摘抄 3-5（执行层按阶段拆分输入组织）
+文件：src/agents/generator.py
+行号：31-43
+内容：
+    def _build_input(problem_text: str, ..., lemma_context_items: list[str] | None = None, verification: str | None = None) -> str:
+        parts = [problem_text.strip()]
+        if lemma_context_items:
+            parts.append("\n\n---\nLemma Context:\n" + ...)
+        if verification:
+            parts.append("\n\n---\nVerification:\n" + verification.strip())
+
+文件：src/agents/reviser.py
+行号：31-47
+内容：
+    def _build_input(problem_text: str, previous_solution: str, verification: str, ...) -> str:
+        parts = [
+            problem_text.strip()
+            + "\n\n---\nPrevious Solution:\n" + (previous_solution or "").strip()
+            + "\n\n---\nVerification Report:\n" + (verification or "").strip()
+        ]
+
+说明：生成阶段和修订阶段使用不同输入组织，前者偏“从题构造”，后者偏“针对缺陷修补”。
+
+代码摘抄 3-6（记忆层负责持久化与事件追踪）
+文件：src/memory/problem_memory.py
+行号：74-108，122-175，211-225
+内容：
+    def init_dirs(self) -> None:
+        self.lemmas_dir.mkdir(parents=True, exist_ok=True)
+        self.papers_dir.mkdir(parents=True, exist_ok=True)
+        self.errors_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_state(self, state: ProblemSnapshot | dict[str, Any]) -> ProblemSnapshot:
+        ...
+        self._atomic_write_text(self.state_path, serialized + "\n")
+
+    def record_stage_event(...):
+        ...
+        self.save_state(current_state)
+
+    def append_event(self, event: dict[str, Any]) -> None:
+        with open(self.history_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+说明：state.json 和 history.jsonl 都由统一入口写入，避免多处散写导致数据不一致。
+
+代码摘抄 3-7（工具层统一分发）
+文件：src/tools/registry.py
+行号：18-56，159-164
+内容：
+    class ToolExecutor:
+        def __call__(self, function_name: str, arguments: dict) -> str:
+            if function_name not in _TOOL_MAP:
+                return format_tool_error(...)
+            ...
+            return _TOOL_MAP[function_name](**normalized_arguments)
+
+    _TOOL_MAP: dict = {
+        "run_python": _format_run_python,
+        "call_searcher": _format_call_searcher,
+        "read_artifact": _format_read_artifact,
+        "review_citation": _format_review_citation,
+    }
+
+说明：工具调用是统一入口，不同工具的返回格式被规范成统一包络，便于上层记录与处理。
+
+3.3 核心闭环流程设计
+
+本系统的核心是生成-验证-修订闭环，转移依据来自验证结论。该逻辑在编排器和恢复策略中是显式编码的。
+
+代码摘抄 3-8（主循环与三路分支）
+文件：src/core/orchestrator.py
+行号：349-390
+内容：
+    for turn in range(1, self.max_turns + 1):
+        decision, verification, verification_text = self._execute_verifier_node(state, turn_id=turn)
+        next_node = self.recovery_policy.route_on_decision(decision)
+
+        if next_node == "FINAL" and decision == VerificationDecision.CORRECT:
+            result = self.finalizer_engine.finalize_success(...)
+            return _finish(result)
+
+        if next_node == "REVISER" and turn < self.max_turns:
+            self._execute_solution_node(... node="REVISER" ...)
+            continue
+
+        if next_node == "GENERATOR" and turn < self.max_turns:
+            self._execute_solution_node(... node="GENERATOR" ...)
+            continue
+
+代码摘抄 3-9（判决到路由的固定映射）
+文件：src/core/recovery_policy.py
+行号：28-38
+内容：
+    def route_on_decision(decision: VerificationDecision) -> str:
+        if decision == VerificationDecision.CORRECT:
+            return "FINAL"
+        if decision == VerificationDecision.MINOR_FLAW:
+            return "REVISER"
+        if decision == VerificationDecision.CRITICAL_FLAW:
+            return "GENERATOR"
+
+说明：这就是轻量有限状态机。它不靠隐式提示词猜测下一步，而是用固定规则做可解释转移。
+
+代码摘抄 3-10（生成与验证节点的职责）
+文件：src/core/orchestrator.py
+行号：103-183，186-281
+内容（节选）：
+    def _execute_solution_node(...):
+        if node == "GENERATOR":
+            ...
+            resp = self.pipeline.generator_agent.run(...)
+        else:
+            ...
+            resp = self.pipeline.reviser_agent.run(...)
+        ...
+        self.problem_memory.append_event({... "node": node, ...})
+
+    def _execute_verifier_node(...):
+        verifier_response, tool_trace, preliminary_analysis = self.pipeline.verifier_agent.run(...)
+        decision = parse_decision(verifier_response)
+        verification = extract_xml_tag(verifier_response, "verification").strip()
+        verified_lemmas = [item for item in extract_xml_tags(...)]
+
+说明：生成/修订负责提出候选文本，验证负责做结构化判决和证据落盘，职责分工明确。
+
+3.4 配置、提示词与运行产物
+
+配置层与产物层共同保证系统“可运行、可复现、可审计”。
+
+代码摘抄 3-11（产物组织）
+文件：src/memory/problem_memory.py
+行号：44-59，459-473
+内容：
+    self.run_dir = self.runs_root / self.problem_id
+    self.state_path = self.run_dir / "state.json"
+    self.history_path = self.run_dir / "history.jsonl"
+    self.artifact_dir = self.run_dir / "artifact"
+    self.lemmas_dir = self.artifact_dir / "lemmas"
+    self.papers_dir = self.artifact_dir / "papers"
+    self.errors_dir = self.artifact_dir / "errors"
+    ...
+    def save_manifest(self, payload: dict[str, Any]) -> Path:
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        self._atomic_write_text(self.manifest_path, serialized + "\n")
+
+代码摘抄 3-12（终态清单写出）
+文件：src/core/finalizer.py
+行号：230-250
+内容：
+    def _save_manifest(...):
+        payload = {
+            "problem_id": state.problem_id,
+            "iteration_count": state.iteration_count,
+            "status": state.status.value if state.status else None,
+            "failure_reason": state.failure_reason,
+            "final_output_path": "artifact/final_output.md" if ... else None,
+            "references": references or [],
+            "citation_warning_summary": warning_summary,
+        }
+        self.problem_memory.save_manifest(payload)
+
+说明：manifest.json 不是临时日志，而是终态摘要，直接用于后续统计与论文复盘。
+
+第四章 核心模块详细设计与实现
+
+4.1 有限状态机编排器的实现与论证
+
+系统没有采用“多答案投票后择优”作为主流程，也没有在主链直接使用高开销树搜索，而是采用确定性状态转移。这不是能力不足，而是与“可控、可解释、易调试”目标一致。
+
+代码摘抄 4-1（固定状态转移）
+文件：src/core/orchestrator.py
+行号：349-408
+内容：
+    for turn in range(1, self.max_turns + 1):
+        ...
+        if next_node == "FINAL" ...
+        if next_node == "REVISER" ...
+        if next_node == "GENERATOR" ...
+    result = self.finalizer_engine.finalize_exhausted(...)
+
+代码摘抄 4-2（异常也走统一策略）
+文件：src/core/orchestrator.py
+行号：307-316
+内容：
+    def _raise_runtime(stage_name: str, exc: Exception) -> None:
+        set_current_problem_memory(None)
+        raise RuntimeError(f"运行失败（{stage_name}）：{type(exc).__name__}: {exc}") from exc
+
+说明：流程“怎么走”和“失败怎么收敛”都明确可读，便于问题定位与回归测试。
+
+4.2 三段式验证器的设计与论证
+
+验证器分三段：先理解，再查证，再给结论。该拆分在代码中是强约束，不是口头约定。
+
+代码摘抄 4-3（三段验证）
+文件：src/agents/verifier.py
+行号：27-87
+内容：
+    solution_body = extract_xml_tag(raw_proof_text, "solution").strip() or raw_proof_text
+    phase1_resp = self.llm_client.chat(... thinking=True ...)
+    ...
+    phase2_resp = self.llm_client.chat_with_tools(...)
+    self.llm_client.clear_reasoning_content(messages)
+    ...
+    phase3_resp = self.llm_client.chat(... thinking=False ...)
+
+说明：phase1 提供分析上下文，phase2 通过工具拿证据，phase3 输出裁决，减少“边想边判”的混乱。
+
+代码摘抄 4-4（契约解析）
+文件：src/utils/parsing/parser.py
+行号：17-62
+内容：
+    def extract_xml_tag(text: str, tag: str) -> str: ...
+    def extract_xml_tags(text: str, tag: str) -> list[str]: ...
+    def parse_decision(verification_text: str) -> VerificationDecision:
+        verdict = extract_xml_tag(verification_text, "verdict")
+        ...
+        raise ParseContractError("invalid_verdict", "Missing <verdict> tag in Verifier output")
+
+说明：验证器输出必须可解析，不能只给一段自由文本。否则编排器无法稳定路由。
+
+4.3 记忆层：上下文注入与知识复用
+
+记忆层并非“向量库黑箱”，而是“文件化、可核对、可注入”的轻量体系。
+
+代码摘抄 4-5（引理写入规则）
+文件：src/memory/problem_memory.py
+行号：312-351
+内容：
+    def add_lemma(self, content: str) -> Path:
+        existing = self._find_existing_markdown_by_content(...)
+        if existing is not None:
+            return existing
+        title = self._title_from_frontmatter(normalized_content)
+        if not title:
+            raise ValueError("lemma missing YAML frontmatter title")
+        ...
+
+说明：引理必须有 frontmatter 标题，且同内容去重、同名冲突自动编号，保证资产可管理。
+
+代码摘抄 4-6（上下文注入）
+文件：src/core/context_builder.py
+行号：16-36
+内容：
+    def _collect_recent_error_hints(self, limit: int = 3) -> list[str]:
+        ...
+        hints.append(f"{first_line} [path:{rel}]")
+
+    def _build_lemma_context(self, item_limit: int = 12, error_limit: int = 3) -> list[str]:
+        summaries = self.problem_memory.list_lemma_context_items(limit=item_limit)
+        error_hints = self._collect_recent_error_hints(limit=error_limit)
+
+说明：下一轮并不是“从头再想”，而是显式带入已有引理摘要和错误提示，形成连续推理。
+
+代码摘抄 4-7（阶段短记忆）
+文件：src/agents/base.py
+行号：37-96
+内容：
+    def reset_stage_memory(self) -> None:
+        self.messages = []
+    ...
+    def run(self, payload: dict | str) -> LLMResponse:
+        ...
+        response = self.llm_client.chat_with_tools(...) 或 self.llm_client.chat(...)
+        ...
+    finally:
+        self.reset_stage_memory()
+
+说明：阶段短记忆和问题长期记忆并存，避免上下文无限膨胀。
+
+4.4 工具层：为验证提供事实基础
+
+工具层重点不在“工具数量”，而在“统一执行、统一错误包络、统一权限边界”。
+
+代码摘抄 4-8（统一调用器与工具映射）
+文件：src/tools/registry.py
+行号：18-56，159-164
+内容：
+    class ToolExecutor:
+        def __call__(self, function_name: str, arguments: dict) -> str:
+            if function_name not in _TOOL_MAP:
+                return format_tool_error(...)
+            ...
+            return _TOOL_MAP[function_name](**normalized_arguments)
+
+    _TOOL_MAP = {
+        "run_python": _format_run_python,
+        "call_searcher": _format_call_searcher,
+        "read_artifact": _format_read_artifact,
+        "review_citation": _format_review_citation,
+    }
+
+代码摘抄 4-9（工件读取安全约束）
+文件：src/tools/artifact_reader.py
+行号：53-90，133-142，149-156
+内容：
+    def _is_allowed_artifact_path(path: Path) -> bool:
+        return re.search(r"(^|/)runs/[^/]+/artifact/.+", normalized) is not None
+
+    def read_artifact(path: str, layer: int) -> str:
+        if layer not in (1, 2, 3):
+            return format_tool_error(error_code="INVALID_LAYER", ...)
+        ...
+        if not _is_allowed_artifact_path(target):
+            return format_tool_error(error_code="PATH_NOT_ALLOWED", ...)
+        ...
+        if not out:
+            return format_tool_error(error_code="LAYER_NOT_FOUND", ...)
+
+说明：该工具限制路径必须位于 runs/{problem_id}/artifact，下层分层读取失败会结构化报错，不会默默失败。
+
+代码摘抄 4-10（Python 沙箱执行）
+文件：src/tools/code_executor.py
+行号：10-45
+内容：
+    _SANDBOX_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    ...
+    result = subprocess.run([sys.executable, tmp.name], ..., timeout=timeout, env=_SANDBOX_ENV)
+    ...
+    except subprocess.TimeoutExpired as exc:
+        ...
+        return {"stderr": f"Execution timed out after {timeout} seconds.", "exit_code": 1}
+
+说明：验证阶段可以调用可控代码执行器进行数值核查，避免只靠语言直觉判断正确性。
+
+代码摘抄 4-11（引用审查）
+文件：src/tools/review_citation.py
+行号：13-69
+内容：
+    def review_citation(...):
+        ...
+        if not exists:
+            missing_cites.append(cite_path)
+        ...
+        return {
+            "all_exist": not missing_cites,
+            "summary": f"Reviewed ... exist, ... missing.",
+            "missing_cites": missing_cites,
+        }
+
+说明：引用检查直接返回“存在/缺失”及全文内容，不把问题藏在模糊提示里。
+
+4.5 终态收口与引用转换
+
+系统最终并非只输出一段答案，而是把答案、验证结果、引用、清单统一固化。
+
+代码摘抄 4-12（终态输出组合）
+文件：src/core/finalizer.py
+行号：79-120
+内容：
+    def _build_final_output(...):
+        if not success:
+            ...
+        if verifier_body:
+            sections.append("## Last Verifier Output\n" + verifier_body)
+        if solution_body:
+            sections.append("## Solution\n" + solution_body)
+        if references:
+            output += "\n\n## References\n" + ...
+
+代码摘抄 4-13（终态持久化）
+文件：src/core/finalizer.py
+行号：166-214，230-250，261-336
+内容（节选）：
+    def _persist(...):
+        self.problem_memory.append_event({"node": "FINAL", ...})
+        self.problem_memory.save_state(snapshot)
+        self._save_artifact(state)
+        self._save_manifest(state, references, warning_summary)
+
+    def finalize_success(...):
+        state.status = RunStatus.SUCCESS
+        ...
+
+    def finalize_exhausted(...):
+        new_lemma_count = self.problem_memory.count_new_lemmas_since_start()
+        state.status = RunStatus.PROGRESS if has_progress else RunStatus.FAILED
+
+说明：系统区分 SUCCESS、PROGRESS、FAILED，不把“未完全解出但有新增知识”的情况粗暴归零。
+
+代码摘抄 4-14（引用标记转参考文献）
+文件：src/utils/parsing/build_reference.py
+行号：15-40，70-87，91-121，123-146
+内容（节选）：
+    _CITE_RE = re.compile(r"\[cite:([^\]]+)\]")
+    ...
+    def _collect_citation_order(...):
+        for match in _CITE_RE.finditer(source_text):
+            ...
+            rendered_parts.append(f"[{citation_index[cite_path]}]")
+
+    def references_to_bibtex(references: list[str]) -> str:
+        ...
+        entry = (
+            f"@misc{{{key},...}}"
+        )
+
+说明：答案中 cite 标记会转为编号引用，并可导出 BibTeX，满足论文归档需要。
+
+第五章 典型案例测试与分析
+
+本章只使用真实运行目录 runs/imo-bench-algebra-001_20260502_151156 的证据，不做虚构叙述。
+
+5.1 测试环境与案例说明
+
+该案例题目是 IMO 代数题，系统运行轮次上限为 3，ground truth 为 3。运行启动记录如下。
+
+运行摘抄 5-1（运行开始记录）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：1
+内容（节选）：
+    {"node": "RUN_START", ..., "ground_truth": "3", "max_turns": 3}
+
+说明：本次案例不是离线手工构造，而是主程序真实执行后留下的运行痕迹。
+
+5.2 案例全流程解析
+
+第一步：初始生成。
+
+运行摘抄 5-2（首轮生成）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：2
+内容（节选）：
+    {"node": "GENERATOR", "turn_id": 0, ..., "content": "<verdict>...N=3...</verdict> ..."}
+
+说明：首轮生成已给出 N=3，但后续是否可通过需要验证器判定。
+
+运行摘抄 5-3（首轮工具异常不致命）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：2
+内容（节选）：
+    "tool_calls_trace": [
+      {"name": "read_artifact", ..., "error_code": "PATH_NOT_FOUND"}
+    ]
+
+说明：生成阶段曾读取不存在路径，但系统没有崩溃，而是把错误结构化记录后继续推进。
+
+第二步：验证与决策。
+
+运行摘抄 5-4（首轮验证为 MINOR_FLAW）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：3
+内容（节选）：
+    {"node": "VERIFIER", "turn_id": 1, "decision": "MINOR_FLAW", ...}
+
+说明：验证结论不是“完全错误”，而是“轻微缺陷”，这正触发 REVISER 路由。
+
+第三步：针对性修订。
+
+运行摘抄 5-5（修订发生在 turn 1）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：4
+内容（节选）：
+    {"node": "REVISER", "turn_id": 1, "content": "<verdict>...N=3...</verdict> ..."}
+
+说明：修订器不是重做整题，而是基于验证报告做定点补强。
+
+第四步：二次验证通过并收口。
+
+运行摘抄 5-6（二轮验证 CORRECT）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：5
+内容（节选）：
+    {"node": "VERIFIER", "turn_id": 2, "decision": "CORRECT", ...}
+
+运行摘抄 5-7（最终事件）
+文件：runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+行号：6
+内容（节选）：
+    {"node": "FINAL", "turn_id": 2, "status": "SUCCESS", ...}
+
+运行摘抄 5-8（终态快照）
+文件：runs/imo-bench-algebra-001_20260502_151156/state.json
+行号：1-33
+内容（节选）：
+    "iteration_count": 2,
+    "status": "SUCCESS",
+    "last_decision": "CORRECT",
+    "stages": [GENERATOR@0, VERIFIER@1, REVISER@1, VERIFIER@2]
+
+运行摘抄 5-9（清单）
+文件：runs/imo-bench-algebra-001_20260502_151156/artifact/manifest.json
+行号：1-9
+内容（节选）：
+    "status": "SUCCESS",
+    "final_output_path": "artifact/final_output.md",
+    "references": [],
+    "citation_warning_summary": null
+
+说明：案例完整展示了“生成-验证-修订-再验证-收口”的闭环，不是人为拼接过程。
+
+5.3 系统运行价值分析
+
+从该案例看，系统价值主要体现在三点。
+
+第一，验证器能把“结果是否正确”和“论证是否完整”区分开。首轮不是直接判错，而是 MINOR_FLAW，这使修订阶段有明确目标。
+
+第二，修订阶段是定向修补，不是盲目重生成。历史事件可见 REVISER 紧接在首轮 VERIFIER 之后，且 turn_id 保持一致语义，保证反馈链条闭合。
+
+第三，终态产物可审计。history.jsonl 记录全过程，state.json 记录结构化状态，manifest.json 给出最终摘要，final_output.md 保留验证输出与最终解答。
+
+第六章 结论与展望
+
+6.1 工作总结
+
+本项目完成了一个计算机软件类毕业设计应具备的核心内容：
+1. 实现了可运行的数学推理 Agent 系统，而非单个脚本。
+2. 构建了生成-验证-修订的闭环编排机制，且转移规则可读可查。
+3. 建立了问题级记忆与工件体系，支持状态快照、历史事件、引理沉淀和终态清单。
+4. 在真实案例中验证了“初稿有缺陷 -> 验证定位 -> 修订补全 -> 成功收口”的流程有效性。
+
+这些结论都在源码和运行文件中有明确证据支撑，不依赖主观推断。
+
+6.2 未来工作展望
+
+结合当前实现，后续可沿三个具体方向推进。
+
+第一，将生成器拓展为更完整的搜索 Agent。当前生成器以单路径为主，未来可引入 Planner，决定何时拆分子问题、何时回溯、何时切换证明思路。
+
+第二，扩展工具能力并把部分工具升级为子 Agent。当前 call_searcher 已在工具注册表中存在（src/tools/registry.py 第81-130行，第159-164行），后续可把检索、摘要、证据整理做成独立流程，降低主链上下文负担。
+
+第三，把编排器从固定规则升级为“规则+智能”混合模式。现阶段 route_on_decision 是清晰可控的硬规则（src/core/recovery_policy.py 第28-38行）；未来可在保留安全边界的前提下，引入 Planner/Manager 对复杂问题做更灵活的路径规划。
+
+总之，本项目已完成“从一次性生成到可校验闭环”的软件化落地。后续重点不是堆叠调用次数，而是在可控性不下降的前提下提升探索能力、证据利用能力和编排智能。

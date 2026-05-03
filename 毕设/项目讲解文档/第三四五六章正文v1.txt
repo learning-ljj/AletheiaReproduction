@@ -1,0 +1,161 @@
+第三章 系统总体设计
+
+本章从系统整体视角说明本项目的架构、流程和数据流。项目的设计目标不是把大模型当作一次性出答案的黑箱，而是把数学推理拆解成一个可迭代、可校验、可追踪的闭环系统。对应到代码实现上，系统由入口层、编排层、执行层、记忆层以及工具与评测层共同组成，核心入口分别见 [main.py](main.py#L92-L206)、[src/core/agent.py](src/core/agent.py#L117-L152)、[src/core/orchestrator.py](src/core/orchestrator.py#L297-L408)、[src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L473)、[src/core/finalizer.py](src/core/finalizer.py#L79-L348)。这些模块不是为了堆叠复杂度，而是为了让每一步推理、每一次验证、每一次修订都能在结构上被明确记录下来。
+
+3.1 设计目标与原则
+
+本项目的设计目标可以概括为四点：第一，支持生成、验证、修订三阶段的闭环迭代，使系统不是一次性输出，而是通过多轮反馈逐步逼近严谨解答；第二，将推理执行与流程控制分开，让模型负责“想”，让编排器负责“走”；第三，将每一轮的输入、输出、验证意见、工具调用和状态变化落盘保存，使过程可审计；第四，把中间得到的引理、错误提示和参考材料沉淀下来，形成可复用的知识资产。
+
+这些目标在代码中并不是抽象口号，而是有明确落点的。入口层在 [main.py](main.py#L92-L206) 中完成参数解析、配置加载和运行启动；配置加载在 [src/core/config.py](src/core/config.py#L9-L51) 中实现，支持 YAML 配置与环境变量替换；高层门面 [src/core/agent.py](src/core/agent.py#L117-L152) 负责装配模型、工具和编排器；编排器 [src/core/orchestrator.py](src/core/orchestrator.py#L297-L408) 负责按验证结果决定下一步；记忆层 [src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L473) 负责保存状态和工件；终态收口则由 [src/core/finalizer.py](src/core/finalizer.py#L79-L348) 完成。整个系统的原则非常清楚：每一层只处理自己职责范围内的问题，不把输入、推理、存储和展示混在一起。
+
+从软件架构角度看，这个系统更接近“分层架构 + 中央编排器 + 工具扩展”的组合，而不是把所有逻辑写进一个大 prompt。这样做的好处很实际：逻辑边界清楚，便于调试；状态转移清楚，便于复现；数据流向清楚，便于答辩时解释。尤其是对毕业设计而言，这种结构比单纯追求更强的模型调用次数更重要，因为它展示的是工程方法，而不是单点效果。
+
+3.2 系统分层架构
+
+系统的分层设计可以从代码组织上直接看出来。入口层对应 [main.py](main.py#L21-L206)，负责读取命令行参数、题目文本、运行配置以及工作日志开关；编排层对应 [src/core/orchestrator.py](src/core/orchestrator.py#L297-L408)，负责组织主循环和终态收口；执行层对应 [src/agents/base.py](src/agents/base.py#L11-L52)、[src/agents/generator.py](src/agents/generator.py#L9-L45)、[src/agents/reviser.py](src/agents/reviser.py#L9-L49)、[src/agents/verifier.py](src/agents/verifier.py#L9-L27)，负责具体的模型交互；记忆层对应 [src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L473) 和 [src/memory/state.py](src/memory/state.py#L207-L360)，负责状态快照与工件沉淀；工具层对应 [src/tools/registry.py](src/tools/registry.py#L18-L159)、[src/tools/artifact_reader.py](src/tools/artifact_reader.py#L53-L152)、[src/tools/code_executor.py](src/tools/code_executor.py#L13-L40)、[src/tools/review_citation.py](src/tools/review_citation.py#L32-L60) 等，负责外部验证能力。
+
+这种分层并不是为了形式上好看，而是围绕“控制流”和“数据流”做拆分。控制流由编排器统一管理，数据流由记忆层和工具层提供。前者决定什么时候生成、什么时候验证、什么时候修订；后者决定模型能看到什么证据、能调用什么工具、能留下什么记录。也就是说，模型负责产出内容，编排器负责分配阶段，记忆层负责保留证据，工具层负责提供外部事实。这种结构使系统从一开始就不是“单轮问答”，而是一个连续运行的推理过程。
+
+入口层的职责非常明确：它不参与任何数学推理，只负责接收问题、装载配置、初始化 Agent，然后把题目交给编排器。配置层在 [src/core/config.py](src/core/config.py#L9-L51) 中提供了一个简单但实用的能力：递归替换环境变量占位符，并把 config/prompts 目录下的多个 YAML 文件合并起来。这说明系统的 prompt 和运行参数不是写死在代码里的，而是作为可调整的配置管理，方便在后续实验中迭代。
+
+3.3 核心闭环流程设计
+
+本系统最核心的设计是生成、验证、修订的闭环。这个闭环不是一个抽象概念，而是落实在 [src/core/orchestrator.py](src/core/orchestrator.py#L297-L408) 的主循环中。实际的路由逻辑可以概括为：先生成初稿，再验证；如果判定正确就收口，如果存在轻微缺陷则进入修订，如果存在结构性缺陷则回到生成。核心代码可以从主循环中直接看出：
+
+    for turn in range(1, self.max_turns + 1):
+        state.iteration_count = turn
+        decision, verification, verification_text = self._execute_verifier_node(state, turn_id=turn)
+        next_node = self.recovery_policy.route_on_decision(decision)
+        if next_node == "FINAL" and decision == VerificationDecision.CORRECT:
+            result = self.finalizer_engine.finalize_success(...)
+            return _finish(result)
+        if next_node == "REVISER" and turn < self.max_turns:
+            self._execute_solution_node(node="REVISER", turn_id=turn, verification=verification)
+            continue
+        if next_node == "GENERATOR" and turn < self.max_turns:
+            self._execute_solution_node(node="GENERATOR", turn_id=turn, verification=verification)
+            continue
+
+这段代码说明，系统不是让模型“自由聊天”，而是把每一轮都限定在明确的状态机里。验证器的决策会通过 [src/core/recovery_policy.py](src/core/recovery_policy.py#L8-L42) 转换成路由动作，其中 CORRECT 对应结束，MINOR_FLAW 对应修订，CRITICAL_FLAW 对应重做。这样的转移方式非常适合数学推理，因为数学证明本质上就是不断发现局部缺陷、补上缺陷、再复核的过程。相比之下，如果没有这种明确的状态转移，系统就容易陷入“看起来在反思，实际上没有前进”的循环。
+
+更具体地说，主循环中的第一个阶段永远是生成初稿。编排器在第一次进入循环之前，会先执行一次生成节点 [src/core/orchestrator.py](src/core/orchestrator.py#L103-L185) 中的 `_execute_solution_node`，也就是先让 Generator 产出一个候选解答，再把这个候选解答交给 Verifier。这样设计的原因是，验证不是对空白文本做判断，而是对一个已经具备初步结构的解答做判定。只有先有一个候选答案，验证器才有“检查对象”，修订器才有“修补对象”。
+
+3.4 配置、提示词与运行产物
+
+系统的运行参数主要由 [config/settings.yaml](config/settings.yaml) 和 [config/prompts](config/prompts) 目录提供，加载逻辑在 [src/core/config.py](src/core/config.py#L9-L51) 中。这里的处理方式有两个特点：一是支持从环境变量注入 provider、密钥和路径等外部配置；二是支持按目录组合多个 prompt 文件，让不同阶段的提示词彼此独立。这种设计对毕业设计很重要，因为它说明系统不是把 prompt 写在代码里，而是把 prompt 视为一种可维护的运行配置。
+
+运行产物的组织也很清晰。问题运行目录由 [src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L74) 统一管理，目录下会生成 state.json、history.jsonl、artifact 目录以及引用和清单文件。终态工件的写入由 [src/core/finalizer.py](src/core/finalizer.py#L166-L348) 和 [src/memory/problem_memory.py](src/memory/problem_memory.py#L459-L473) 共同完成，其中 final_output.md 由终态收口写出，manifest.json 记录状态摘要，citations.bib 记录引用条目。这样做的好处是，单题运行后留下来的不是零散日志，而是一套结构化产物，便于事后分析和论文展示。
+
+第四章 核心模块详细设计与实现
+
+本章进一步说明系统内部各模块的职责和实现方式，并解释为什么采用当前方案而不是其他可选方案。这里的重点不是“有哪些类”，而是“为什么这样拆、为什么这样走、为什么这样联”。
+
+4.1 高层装配与阶段白名单
+
+系统从高层看并不是直接把模型调用散落到各处，而是先由 [src/core/agent.py](src/core/agent.py#L62-L152) 完成统一装配，再把装配结果交给编排器使用。这个装配过程包含三步：先创建模型客户端，再生成工具 schema，最后按阶段装配生成器、验证器和修订器。AletheiaAgent 只是门面，真正承担阶段分工的是 AgentPipeline。
+
+这里最值得说明的是工具白名单。代码中 `_AGENT_TOOL_ALLOWLIST` 明确限制了不同阶段可用的工具：generator 和 reviser 只开放 read_artifact，verifier 则开放 run_python、read_artifact 和 review_citation。白名单筛选发生在 `_filter_tool_schemas` 和 `ScopedToolExecutor` 中，它们一方面在模型可见的 schema 上做筛选，另一方面在真正调用时再做一次权限检查。这个“双层限制”很有必要，因为它避免了模型在不合适阶段乱调用工具，也避免了工具 schema 泄漏到错误阶段。换句话说，工具不是“谁都能用”，而是“在合适的阶段用合适的工具”。
+
+这种设计还体现出一个工程上的取舍：当前版本保留了 call_searcher 的工具实现和 schema，但主链没有把它开放给 generator/reviser，说明系统在工具开放上采取了较保守的策略。这并不是能力不足，而是为了让主链保持可控。对毕业设计来说，这种保守反而是优点，因为它说明系统优先考虑可解释、可复现和可调试。
+
+4.2 公共阶段骨架与短记忆机制
+
+所有阶段的共同运行机制都继承自 [src/agents/base.py](src/agents/base.py#L11-L52) 的 BaseAgent。这个基类的核心作用，是把一次阶段调用包装成统一的生命周期：写入 system prompt、写入用户输入、调用模型、记录返回结果、清空阶段记忆。它不关心是生成、验证还是修订，只关心“一个阶段应该如何安全、统一地跑完”。
+
+这里最重要的一个设计是“短记忆”。BaseAgent 在 run 的最后会立即执行 reset_stage_memory，把 self.messages 清空。这意味着每个阶段都是独立会话，不会把上一轮的噪音带进下一轮。这个机制很像“单阶段短记忆”，和 ProblemMemory 提供的“长期记忆”形成对照：前者用于控制一次调用的上下文污染，后者用于保留跨轮次的引理、错误和工件。两层记忆合在一起，既避免了上下文无限膨胀，也避免了有用信息丢失。
+
+BaseAgent 的 run 方法还做了一件很关键的事：无论是否调用工具，最终都会返回一个结构化的 LLMResponse，其中既包含 content，也包含 reasoning_content 和 tool_calls_trace。这样一来，上层不仅能看到答案文本，还能看到模型的思考痕迹和工具调用痕迹，便于后续审计。对于一个需要写入论文的软件系统来说，这种“完整返回”比只返回一句答案更重要，因为它让系统的行为可解释、可回放。
+
+4.3 生成与修订阶段的输入组织
+
+生成器和修订器都建立在 BaseAgent 之上，但它们的输入组织方式不同。Generator 的输入在 [src/agents/generator.py](src/agents/generator.py#L31-L45) 中组装，主要包括题目本身、引理上下文和上一轮验证反馈。Reviser 的输入在 [src/agents/reviser.py](src/agents/reviser.py#L31-L49) 中组装，主要包括题目、上一版解答、验证报告和引理上下文。两者的区别很明确：生成器更像“从题目出发构造答案”，修订器更像“在已有答案上做针对性修补”。
+
+Generator 的输入组织逻辑可以概括为：先放题目文本，再把 lemma context 追加进去，如果有上一轮验证意见，就把 verification 也追加进去。这个顺序不是随便定的。题目文本是当前阶段的主线，lemma context 是历史积累的辅助知识，verification 是上轮的错误反馈。把三者按这个顺序拼起来，模型更容易把新一轮任务理解为“在题目约束下，参考历史知识，修正前一轮问题”。修订器的组织逻辑也类似，只不过它额外插入了 previous_solution，因为修订阶段的关键不是重新发明，而是在原方案上补缺。
+
+这种设计说明系统并不是“把所有信息一次性扔给模型”，而是按照阶段目标组织上下文。这个差异非常重要：如果不分阶段组织，模型很容易把题目、旧答案、错误信息和引理混成一团，最后输出虽然长，但结构混乱。现在这种做法则更符合人类解题过程：先看题，再看前面的尝试，再针对性修改。
+
+4.4 三段式验证器与契约化输出
+
+验证器是整个系统的质量守门员。它的实现见 [src/agents/verifier.py](src/agents/verifier.py#L9-L27)，核心不是简单地“判断对错”，而是分三段完成分析、查证和裁决。第一阶段通过 chat(thinking=True) 让模型先形成对候选解答的整体理解；第二阶段调用 chat_with_tools，让模型通过工具去核实关键步骤；第三阶段再用 chat(thinking=False) 输出最终裁决。
+
+验证器最关键的一个特征，是它的输出具有契约性。Orchestrator 不直接读取自然语言，而是通过 [src/utils/parsing/parser.py](src/utils/parsing/parser.py#L8-L39) 中的 extract_xml_tag、extract_xml_tags 和 parse_decision 去解析 <verdict>、<verification>、<verified_lemmas>、<citation_review> 等块。也就是说，验证器的输出不是随便写一段话，而是必须符合可解析结构。这样做的价值在于，编排器只需要读裁决，不需要读长篇解释；而验证意见、证实引理和引用审查则分别写入不同字段，方便后续保存和展示。
+
+这个三段式设计的好处在于，把“看懂问题”“查找证据”“做出结论”分离开来。第一段让模型先理解上下文，避免一上来就盲目查证；第二段让事实和工具结果说话，避免凭主观直觉下结论；第三段才做最终裁决，避免把思考过程和裁决过程混在一起。对于数学推理来说，这个分离非常重要，因为很多错误并不是“结论完全错”，而是“中间缺少一条证明链”。三段式验证器正是为了识别这种“主线对、细节不严谨”的情况。
+
+4.5 记忆层、上下文构建与引理复用
+
+记忆层的核心是 [src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L473)。它负责把一题的运行过程变成可持久化资产。save_state 会把 ProblemSnapshot 写入 state.json；append_event 会把每个事件追加到 history.jsonl；record_stage_event 会把每个阶段执行结果写回 state 里的 stages；add_lemma 会把新引理写入 artifact/lemmas；add_paper 和 add_error 分别保存论文工件和错误工件；save_manifest 则保存运行摘要。这个模块实际上就是本项目的“长期记忆中心”。
+
+引理的复用并不是复杂的向量检索，而是更轻量也更可控的上下文注入。ContextBuilder 在 [src/core/context_builder.py](src/core/context_builder.py#L10-L31) 中，会调用 ProblemMemory.list_lemma_context_items 提取当前已有的引理和论文摘要，再从 errors 目录里抽取最近的错误提示，拼成一组简短的上下文条目。然后在下一轮生成或修订时，这些条目会被直接注入到 prompt 中。也就是说，引理的利用方式不是“查库搜索”，而是“把已经验证过的知识重新放回下一轮上下文”。
+
+这种设计有一个重要的优点：记忆不是负担，而是资产。因为它只抽取已经被证明有用的摘要，不会把一堆冗长历史一次性塞给模型。另一方面，它又足够保留上下文连续性，让后续轮次可以直接站在上一轮的正确部分继续往下推。尤其在本项目的数学推理场景中，这种做法非常合适，因为很多中间结论本身就可以复用，比如某个同余计数引理、某个分解公式、某个边界分析结果。
+
+值得注意的是，ProblemMemory 还维护了初始引理集合和新增引理集合，用于统计本次运行是否产生了新的知识。这个统计最终会影响终态判断：如果轮次耗尽但新增了引理，终态会被标记为 PROGRESS；如果没有新增引理，则标记为 FAILED。这一点说明系统不仅关注最终答案，还关注过程中是否产生了新的、可复用的推理资产。
+
+4.6 工具层、证据检查与外部验证
+
+工具层由 [src/tools/registry.py](src/tools/registry.py#L18-L159) 统一分发。ToolExecutor 根据工具名找到对应实现，再把结果包装成统一的成功或错误结构。当前工具映射里包含 run_python、call_searcher、read_artifact 和 review_citation 四类能力，其中 run_python 由 [src/tools/code_executor.py](src/tools/code_executor.py#L13-L40) 提供真正的 Python 沙箱执行，read_artifact 由 [src/tools/artifact_reader.py](src/tools/artifact_reader.py#L53-L152) 提供分层工件读取，review_citation 由 [src/tools/review_citation.py](src/tools/review_citation.py#L32-L60) 提供引用存在性检查，call_searcher 则桥接到搜索管线。
+
+工具层的存在，是为了给模型提供“可检查的外部事实”。例如，当需要验证一个数论公式时，模型可以借助 run_python 做小规模枚举；当需要查阅已经保存的引理时，可以用 read_artifact 读取对应工件；当验证候选解答中的引用是否真的存在时，可以用 review_citation 检查路径并返回全文。工具并不是为了替代推理，而是为了让推理有证据可依。
+
+需要诚实说明的是，当前主链对工具的开放是保守的。根据 [src/core/agent.py](src/core/agent.py#L1-L62) 的白名单设置，generator 和 reviser 阶段只开放 read_artifact，verifier 阶段开放 run_python、read_artifact 和 review_citation；call_searcher 虽然在工具注册表中存在，也有 schema 定义 [src/tools/schemas.py](src/tools/schemas.py#L1-L111)，但并未在主链白名单中向生成和修订阶段开放。这说明当前版本更偏向稳健路线：先保证验证和修订的稳定，再考虑进一步扩大工具半径。
+
+4.7 终态收口与最终输出
+
+最终输出的生成由 [src/core/finalizer.py](src/core/finalizer.py#L79-L348) 完成。这个模块做了几件事：第一，抽取当前解答中的引用标记并生成 references；第二，把 warnings 汇总成可读段落；第三，构造 final_output 文本；第四，把 FINAL 事件、state.json、final_output.md 和 manifest.json 都写入磁盘。终态入口有两个：finalize_success 和 finalize_exhausted。前者用于验证通过，后者用于轮次耗尽后的收敛。
+
+finalize_success 会把状态标记为 SUCCESS，并通过 _compose 将最终答案、引用和警告组织成一份可展示文本。finalize_exhausted 则先根据本次运行是否新增引理来区分 PROGRESS 和 FAILED，再写入相应终态。这里的一个关键判断是 count_new_lemmas_since_start，它体现了系统对“过程产出”的重视。即使没有完全求出答案，只要确实形成了新的知识，那么系统也不会简单地把它看成失败，而是给出 PROGRESS 这种更贴近实际研究过程的状态。
+
+此外，finalizer 还调用 build_references 和 references_to_bibtex，把解答中的 cite 标记转换成标准引用，并保存 BibTeX。这个步骤见 [src/utils/parsing/build_reference.py](src/utils/parsing/build_reference.py#L91-L123)。这说明系统最终输出不仅是面向阅读的自然语言答案，也包括面向论文和存档的引用记录。换句话说，系统不仅想“答题”，还想“把答题过程写成可引用的研究产物”。
+
+第五章 典型案例测试与分析
+
+本章以 runs/imo-bench-algebra-001_20260502_151156 这一轮实际运行结果为例，说明系统如何从初稿、验证、修订到最终收敛。这个案例对应的题目见 [runs/imo-bench-algebra-001_20260502_151156/history.jsonl](runs/imo-bench-algebra-001_20260502_151156/history.jsonl) 的第一条记录，问题本身是一道关于整数对求和的代数题，ground truth 为 3，最终运行状态在 [runs/imo-bench-algebra-001_20260502_151156/state.json](runs/imo-bench-algebra-001_20260502_151156/state.json) 中被标记为 SUCCESS，最后输出见 [runs/imo-bench-algebra-001_20260502_151156/artifact/final_output.md](runs/imo-bench-algebra-001_20260502_151156/artifact/final_output.md)，运行摘要见 [runs/imo-bench-algebra-001_20260502_151156/artifact/manifest.json](runs/imo-bench-algebra-001_20260502_151156/artifact/manifest.json)。
+
+5.1 案例说明与运行背景
+
+这道题之所以适合作为典型案例，是因为它不是简单算术，而是需要把“商与余数分解、同余类计数、欧拉函数恒等式、积性展开和不等式分析”串成一条完整证明链。更重要的是，它不是那种一眼就能看出答案的题，而是非常适合展示“初稿方向正确，但论证不够严谨，随后通过验证和修订补全”的闭环过程。
+
+从运行记录来看，系统先在 turn 0 生成了一版完整初稿。这个初稿的最终结论已经是 N=3，而且主线证明也基本正确，但在细节上存在两个问题：一是引理中的计数论证不够严谨，二是步骤8中关于积性函数乘积展开的推导过于简略。换言之，这个初稿并不是“结论错了”，而是“证明链条还不够完整”。这恰恰符合我们希望系统处理的对象：不是完全错误的胡乱答案，而是“需要补证”的自然语言证明。
+
+5.2 初稿、验证、修订与终稿
+
+第一轮生成结果见 [runs/imo-bench-algebra-001_20260502_151156/history.jsonl](runs/imo-bench-algebra-001_20260502_151156/history.jsonl) 的第二条记录。生成器输出的解答已经给出了完整的主结论：所有满足条件的正整数只有 N=3。它采用的主线是先把问题改写为余数和，再引入关于 ab mod m 的求和引理，接着用 gcd 求和公式把问题转化为关于欧拉函数的恒等式，最后通过素因数分解和不等式分析得到 m=4，从而推出 N=3。也就是说，整体思路是对的，问题不在主线，而在局部证明的严谨性。
+
+这一轮生成时还发生了一个值得说明的工具事件。Generator 曾尝试读取一个并不存在的工件路径，记录在 history.jsonl 的工具调用中，返回了 PATH_NOT_FOUND。这说明系统的工具层并不是“读取不到就直接崩掉”，而是会把工具错误结构化返回给模型，模型随后继续完成当前任务。这个细节体现了工具层的稳健性：错误可见，但不会打断主流程。
+
+第一轮验证结果在 history.jsonl 的第三条记录中被标记为 MINOR_FLAW。Verifier 的反馈非常具体，主要指出三点：第一，引理部分虽然结论正确，但“对于每个非零剩余类恰有 d 个解”的计数论证没有写完整；第二，步骤8中从和式到乘积式的推导缺少显式说明；第三，输出格式契约不完整，缺少规范的标签结构。这里值得强调的是，验证器并没有否定答案本身，而是准确识别了“结论正确但证明不完整”的情况。这正是三段式验证器的价值所在：它能区分“结果错”和“论证不够严谨”。
+
+修订器在接到 MINOR_FLAW 后没有重新发明整题，而是做了定点补强。修订后的版本见 history.jsonl 的第四条记录以及 final_output.md。它把引理重新整理为更严格的计数证明：先令 d=gcd(a,m)，再写出 a=d a'、m=d m'，然后说明在模 m' 下 a' 可逆，因此每个非零剩余类恰有 d 个解。这样一来，引理不再只是“猜对了公式”，而是把为什么成立讲清楚了。与此同时，步骤8的积性展开也被补充完整：说明 g(d)=varphi(d)/d 是积性函数，并据此推出和式的乘积形式，再进行下界分析，最后得到唯一解 m=4。修订后的正文因此不再有论证断裂。
+
+第二轮验证结果在 history.jsonl 的第五条记录中被标记为 CORRECT。Verifier 在复核后确认，修订后的解答没有内容错误、没有论证漏洞，也没有格式问题。最终 state.json 显示 iteration_count 为 2，status 为 SUCCESS，last_decision 为 CORRECT，error_summary 为空，说明系统在两轮验证内完成了收敛。最终输出 final_output.md 中保留了 Last Verifier Output、Solution、Verified Lemmas 和 Citation 相关段落，说明系统不仅保留了答案，还保留了验证依据与知识沉淀。
+
+如果把这个案例浓缩成一条运行逻辑，就是：第一轮生成给出一版基本正确但不够严谨的证明；验证器指出具体漏洞，并把它们分解为可修补的问题；修订器补齐证明细节；第二轮验证确认通过；最终收口为 SUCCESS。这个过程很好地体现了本系统的核心价值：它不是只看最后答案是否正确，而是能把一个有瑕疵的自然语言数学证明一步步修成一个完整、可验证、可保存的证明。
+
+5.3 案例分析与系统价值
+
+这个案例最能证明的，不是某一道题算出来了，而是系统的闭环真的起作用了。首先，Generator 的初稿说明模型具备生成完整解题主线的能力；其次，Verifier 能准确捕捉到“主线正确但证明不够严谨”的问题，这说明验证器不是形式化装饰，而是真正承担质量把关职责；再次，Reviser 能根据验证意见对具体漏洞进行定点修补，说明修订不是重新生成，而是基于反馈的局部增强；最后，Finalizer 能把最终证明、引用和状态整理成结构化工件，说明系统不仅能答题，还能归档。
+
+对比单轮 CoT，这个案例展示了多轮闭环的优势。单轮 CoT 可能直接输出一个看似完整的答案，但它无法区分“逻辑完整”和“逻辑跳步”；而本系统通过验证器把这两个维度拆开，能够明确指出缺失的证明环节。对比多答案投票，这个案例同样能说明问题：投票只能选答案，不能补证明。如果所有候选答案都在同一个引理上写得不严谨，投票并不能自动修补。而本系统的修订器可以直接针对验证器指出的漏洞做补强，这才是真正的闭环修正。
+
+第六章 结论与展望
+
+6.1 工作总结
+
+本项目围绕“生成、验证、修订”闭环，完成了一个面向数学推理的 Agent 型软件系统。系统在架构上采用分层设计，入口层负责接收问题和配置，编排层负责控制状态转移，执行层负责阶段性推理，记忆层负责状态和工件持久化，工具层负责提供外部证据与验证能力，终态层负责整理最终输出和运行清单。对应代码分别见 [main.py](main.py#L92-L206)、[src/core/agent.py](src/core/agent.py#L117-L152)、[src/core/orchestrator.py](src/core/orchestrator.py#L297-L408)、[src/memory/problem_memory.py](src/memory/problem_memory.py#L34-L473)、[src/core/finalizer.py](src/core/finalizer.py#L79-L348)、[src/tools/registry.py](src/tools/registry.py#L18-L159)。
+
+在核心机制上，系统实现了一个明确的有限状态机：生成、验证、修订、结束之间的状态转移由验证结论决定；验证器采用三段式结构，把分析、查证和裁决分开；记忆层把引理、错误和工件保存下来，并通过上下文构建器注入下一轮 prompt；工具层则为数学证明提供了代码验证、工件读取和引用检查等能力。这些机制共同构成了一个可追踪、可审计、可修正的推理闭环。
+
+在实际运行上，系统通过 runs/imo-bench-algebra-001_20260502_151156 这一轮案例展示了从初稿到修订再到终态收口的全过程。案例表明，系统不仅能生成答案，还能识别证明中的论证漏洞，并通过修订将其补齐。这个结果说明，本项目在毕业设计层面已经实现了预期目标：把自然语言数学推理从一次性输出提升为一个带反馈、可修正的过程。
+
+6.2 未来工作展望
+
+尽管当前系统已经能够完成闭环推理，但仍然有明显的可扩展空间。结合当前代码结构和运行方式，后续可以从三个方向继续推进。
+
+第一，可以把生成器拓展为更完整的搜索 Agent。当前 Generator 更像单路径输出器，主要工作是根据题目、上下文和验证反馈生成一版候选解答。未来可以在其上增加 Planner 角色，让系统先决定是否要拆分子问题、是否要回溯到前一分支、是否要切换证明思路，再由底层执行具体搜索。这样，系统就不只是线性修订，而是具备一定的探索能力。这一方向在当前代码中并没有实现，但与现有结构是兼容的，因为编排器和执行层已经分离，替换生成器内部策略不会破坏整体框架。
+
+第二，可以把工具进一步拓展，并把部分工具升级为子 Agent。当前工具层已经包含搜索、代码执行、工件读取和引用检查，但主链对工具使用仍然比较保守。未来可以把文献搜索工具做成独立子 Agent，让它自己完成检索、筛选、整理和摘要，再把精炼后的信息回传给主流程。这样不仅可以减少主 Agent 的上下文噪音，还可以让工具成为真正有记忆、有总结能力的辅助节点，而不是只返回原始文本的函数。这类扩展与现有的 ToolExecutor 和 worklog 体系是兼容的，因为工具调用和运行记录本来就是结构化保存的。
+
+第三，可以考虑把编排器本身也升级为一个 LLM Agent。当前的 Orchestrator 是硬编码有限状态机，优点是清晰、稳定、可解释，但缺点是灵活性有限。未来如果把编排职责也交给一个 Planner/Manager 型 Agent，就可以根据题目的类型、当前进展和历史反馈动态决定下一步是生成、验证、修订还是调用工具，使整个系统更像一个真正的多轮协作推理系统。这个方向与 [src/core/recovery_policy.py](src/core/recovery_policy.py#L8-L42) 的固定路由逻辑形成对照：当前系统优先保证可控性，未来可以在此基础上逐步增强灵活性。
+
+总的来说，本项目已经验证了一个重要结论：对于复杂数学推理，自然语言模型并不是不能用，关键在于不能把它当作一次性答案机，而要把它放进一个能够自我校验、自我修正和持续记忆的系统中。当前实现已经完成了这一思路的基本验证，后续工作的重点就是在不破坏可控性的前提下，进一步增强探索能力、证据能力和编排智能。
