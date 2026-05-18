@@ -64,7 +64,9 @@ _TOOL_SCHEMAS: list[dict] = [
             "name": "read_artifact",
             "description": (
                 "Read one specific layer from an artifact markdown file under runs/{problem_id}/artifact. "
-                "layer=1 reads YAML frontmatter summary, layer=2 reads Layer2 body, "
+                "Path must include the full run path like runs/<problem_id>/artifact/lemmas/<file>.md or "
+                "runs/<problem_id>/artifact/papers/<file>.md (do not use placeholders or short paths). "
+                "layer=1 reads the full YAML frontmatter, layer=2 reads Layer2 body, "
                 "layer=3 reads Layer3 source metadata."
             ),
             "parameters": {
@@ -72,7 +74,7 @@ _TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Artifact markdown file path under runs/{problem_id}/artifact.",
+                        "description": "Full run-relative path starting with runs/<problem_id>/artifact/...",
                     },
                     "layer": {
                         "type": "integer",

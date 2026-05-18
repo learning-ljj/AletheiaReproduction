@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.memory.state import ProblemSnapshot, StageSnapshot, EventSnapshot
+from src.tools.artifact_reader import read_artifact
 
 _logger = logging.getLogger(__name__)
 
@@ -342,6 +343,12 @@ class ProblemMemory:
             self.lemmas_dir, desired_name
         )
 
+        run_path = f"runs/{self.problem_id}/artifact/lemmas/{final_name}"
+        normalized_content = self._replace_lemma_source_with_from(
+            normalized_content,
+            from_path=run_path,
+        )
+
         # 4) 写入
         target = self._save_markdown(self.lemmas_dir, normalized_content, filename=final_name)
 
@@ -350,6 +357,29 @@ class ProblemMemory:
             self._new_lemma_paths.add(target)
 
         return target
+
+    @staticmethod
+    def _replace_lemma_source_with_from(text: str, from_path: str) -> str:
+        """将 frontmatter 中的 source: self_proved 替换为 from: <path>。"""
+        if not text:
+            return text
+        pattern = re.compile(r"(?s)\A(\s*---\n)(.*?)(\n---)")
+        match = pattern.search(text)
+        if not match:
+            return text
+
+        header, body, tail = match.groups()
+        lines = body.splitlines()
+        replaced = False
+        for i, line in enumerate(lines):
+            if re.match(r"^\s*source\s*:\s*self_proved\s*$", line):
+                lines[i] = f"from: {from_path}"
+                replaced = True
+                break
+        if not replaced:
+            lines.append(f"from: {from_path}")
+        new_body = "\n".join(lines)
+        return pattern.sub(f"{header}{new_body}{tail}", text, count=1)
 
     @staticmethod
     def _slugify_filename(text: str, max_len: int = 60) -> str:
@@ -413,19 +443,19 @@ class ProblemMemory:
         out: list[str] = []
         for folder in (self.lemmas_dir, self.papers_dir):
             for path in sorted(folder.glob("*.md")):
+                run_path = f"runs/{self.problem_id}/{path.relative_to(self.run_dir).as_posix()}"
+                payload = read_artifact(path=run_path, layer=1)
                 try:
-                    text = path.read_text(encoding="utf-8")
-                except OSError:
+                    parsed = json.loads(payload)
+                except json.JSONDecodeError:
                     continue
-                # 优先 frontmatter title，其次首行
-                title = (
-                    self._title_from_frontmatter(text)
-                    or self._first_non_empty_line(text)
-                )
-                if not title:
+                if parsed.get("status") != "OK":
                     continue
-                relative = path.relative_to(self.run_dir).as_posix()
-                out.append(f"{title} [path:{relative}]")
+                data = parsed.get("data") or {}
+                content = data.get("content")
+                if not content:
+                    continue
+                out.append(content)
                 if len(out) >= max(0, limit):
                     return out
         return out
