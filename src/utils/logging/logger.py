@@ -33,7 +33,7 @@ def append_raw_event(problem_id: str, payload: dict, runs_root: Path = RUNS_DIR)
 
 
 def _normalize_display_math_markers(text: str) -> str:
-	"""将展示数学的 LaTeX 标记从 \[...\] 转换为 $$...$$。"""
+	r"""将展示数学的 LaTeX 标记从 \[...\] 转换为 $$...$$。"""
 	return re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", text, flags=re.S)
 
 

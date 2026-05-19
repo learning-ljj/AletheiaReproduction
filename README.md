@@ -83,7 +83,7 @@ pip install -r requirements.txt
 
 ```powershell
 # 从文本文件读取题目
-python main.py data/problem/PB-Basic-001.txt --max-turns 3
+python main.py data/problem-case/PB-Basic-001.txt --max-turns 3
 
 # 直接传入题面文本
 python main.py --problem "Prove that for all n>=1, n^2+n is even." --max-turns 1

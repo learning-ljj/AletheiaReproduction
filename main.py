@@ -55,8 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--generate-worklog",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether to generate markdown worklog after run (default: true).",
+        default=False,
+        help="Whether to generate markdown worklog after run (default: false).",
     )
     parser.add_argument(
         "--worklog-path",

@@ -344,7 +344,7 @@ class ProblemMemory:
         )
 
         run_path = f"runs/{self.problem_id}/artifact/lemmas/{final_name}"
-        normalized_content = self._replace_lemma_source_with_from(
+        normalized_content = self._replace_lemma_source(
             normalized_content,
             from_path=run_path,
         )
@@ -359,8 +359,11 @@ class ProblemMemory:
         return target
 
     @staticmethod
-    def _replace_lemma_source_with_from(text: str, from_path: str) -> str:
-        """将 frontmatter 中的 source: self_proved 替换为 from: <path>。"""
+    def _replace_lemma_source(text: str, from_path: str) -> str:
+        """将 frontmatter 中的 source: self_proved 替换为 from: <path>。
+        
+        替换方式避免 re.sub() 中的转义问题，改用 callable 替换或直接字符串拼接。
+        """
         if not text:
             return text
         pattern = re.compile(r"(?s)\A(\s*---\n)(.*?)(\n---)")
@@ -379,7 +382,10 @@ class ProblemMemory:
         if not replaced:
             lines.append(f"from: {from_path}")
         new_body = "\n".join(lines)
-        return pattern.sub(f"{header}{new_body}{tail}", text, count=1)
+        # 使用直接字符串拼接而不是 pattern.sub()，避免转义问题
+        frontmatter = f"{header}{new_body}{tail}"
+        rest = text[match.end():]
+        return frontmatter + rest
 
     @staticmethod
     def _slugify_filename(text: str, max_len: int = 60) -> str:
