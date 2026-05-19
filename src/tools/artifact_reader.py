@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.tools.format import format_tool_error, format_tool_success
 
-# lemma 文档（三层）示例：
+# lemma 文档（两层）示例：
 """
 ~~~markdown
 ---
@@ -15,16 +15,12 @@ summary: 若 n 为正整数，则 gcd(n, n+1)=1
 conditions:
   - n is positive integer
 conclusion: gcd(n, n+1)=1
-source: self_proved
+from: runs/{problem_id}/artifact/lemmas/{file}.md
 ---
 
-## Layer2-Proof
 Step 1. 设 d 同时整除 n 与 n+1，则 d 整除 (n+1)-n=1。
 Step 2. 因此 d=1，故 gcd(n,n+1)=1。
 
-## Layer3-Source
-Source: generator
-Reference: self_proved
 ~~~
 """
 # paper 文档（三层）示例：
@@ -37,6 +33,7 @@ conditions:
   - assumption A
   - assumption B
 conclusion: bound O(n log n)
+from: runs/{problem_id}/artifact/papers/{file}.md
 ---
 
 ## Layer2-Extracted
@@ -56,19 +53,26 @@ def _is_allowed_artifact_path(path: Path) -> bool:
     return re.search(r"(^|/)runs/[^/]+/artifact/.+", normalized) is not None
 
 
-def _extract_yaml(text: str) -> str:
+def _split_frontmatter(text: str) -> tuple[str, str]:
     # Layer1 约定为文档最前面的 YAML frontmatter：
     # ---
     # key: value
     # ---
     stripped = text.lstrip()
     if not stripped.startswith("---"):
-        return ""
+        return "", stripped
     first = stripped.find("\n")
     second = stripped.find("\n---", first + 1)
     if first == -1 or second == -1:
-        return ""
-    return stripped[: second + 4].strip()
+        return "", stripped
+    yaml_block = stripped[: second + 4].strip()
+    body = stripped[second + 4 :]
+    return yaml_block, body
+
+
+def _extract_yaml(text: str) -> str:
+    yaml_block, _ = _split_frontmatter(text)
+    return yaml_block
 
 
 def _extract_layer(text: str, layer: int) -> str:
@@ -84,9 +88,9 @@ def _extract_layer(text: str, layer: int) -> str:
 def read_artifact(path: str, layer: int) -> str:
     """Read only one requested layer from an artifact markdown file.
 
-    layer=1: YAML frontmatter summary
-    layer=2: extracted theorem/proof body
-    layer=3: source metadata/provenance section
+    layer=1: YAML frontmatter
+    layer=2: lemma proof body or paper extracted body
+    layer=3: paper source metadata (lemmas do not have layer3)
     """
     # 统一策略：始终返回 format JSON 字符串（OK/ERROR），避免上层再维护“裸文本 / 字典 / 异常”三套分支。
 
@@ -141,8 +145,29 @@ def read_artifact(path: str, layer: int) -> str:
 
     # --- 4. 读取文件并按层提取 ---
     text = target.read_text(encoding="utf-8")
+    is_lemma = "/artifact/lemmas/" in target.as_posix().lower()
+    is_paper = "/artifact/papers/" in target.as_posix().lower()
+
     if layer == 1:
         out = _extract_yaml(text)
+    elif is_lemma:
+        if layer != 2:
+            return format_tool_error(
+                tool="read_artifact",
+                error_code="LAYER_NOT_ALLOWED",
+                message="lemma files only support layer=1 or layer=2",
+                retryable=False,
+                detail={"layer": layer, "path": str(target)},
+            )
+        out = _extract_layer(text, layer=2)
+        if not out:
+            _, body = _split_frontmatter(text)
+            out = body.strip()
+    elif is_paper:
+        if layer == 2:
+            out = _extract_layer(text, layer=2)
+        else:
+            out = _extract_layer(text, layer=3)
     else:
         out = _extract_layer(text, layer=layer)
 

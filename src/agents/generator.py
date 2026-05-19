@@ -38,6 +38,8 @@ class GeneratorAgent(BaseAgent):
         parts = [problem_text.strip()]
         if lemma_context_items:
             parts.append("\n\n---\nLemma Context:\n" + "\n".join(f"- {item}" for item in lemma_context_items))
+        else:
+            parts.append("\n\n---\nLemma Context:\n- (empty)")  # 明确告诉模型当前没有可用引理，避免它调用工具检索。
         if verification:
             parts.append("\n\n---\nVerification:\n" + verification.strip())
         return "".join(parts)

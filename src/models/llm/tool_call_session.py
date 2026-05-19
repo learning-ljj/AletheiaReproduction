@@ -32,13 +32,14 @@ class ToolCallSession:
         tool_executor: Callable[[str, dict], str],
         max_rounds: int = 20,
         stream_prefix: str | None = None,
-    ) -> tuple[str, str, list[dict]]:
-        """Return (content, reasoning_content, tool_trace).
+    ) -> tuple[str, str, list[dict], list[str]]:
+        """Return (content, last_reasoning, tool_trace, reasoning_trace).
 
         约束：stream_transport 始终返回 list 类型 tool_calls，
         因此本循环以空列表表示“本轮无工具调用意图”。
         """
         trace: list[dict] = []
+        reasoning_trace: list[str] = []
         last_reasoning = ""
         content = ""
 
@@ -52,6 +53,7 @@ class ToolCallSession:
                 stream_prefix=stream_prefix,
             )
             last_reasoning = reasoning_content or ""
+            reasoning_trace.append(last_reasoning)
 
             # 将 assistant 的输出写入 messages，供下一轮模型看到自己的话
             assistant_msg: dict = {
@@ -98,6 +100,6 @@ class ToolCallSession:
                     }
                 )
 
-        # 返回最后一轮正文 + 最后一轮思维链 + 全部工具调用轨迹。
+        # 返回最后一轮正文 + 最后一轮思维链 + 全部工具调用轨迹 + 全部思维链列表。
         # 这里 trace 是“本次 run 内完整轨迹”，上层可继续做跨尝试 merge。
-        return content or "", last_reasoning, trace
+        return content or "", last_reasoning, trace, reasoning_trace

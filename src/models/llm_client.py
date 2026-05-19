@@ -4,7 +4,6 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
-from src.models.llm.message_sanitizer import MessageSanitizer
 from src.models.llm.provider_factory import ProviderFactory
 from src.models.llm.stream_transport import StreamTransport
 from src.models.llm.tool_call_session import ToolCallSession
@@ -19,6 +18,7 @@ class LLMResponse:
 
     content: str  # 最终回答（解析器 Task 2.1-2.3 的输入源）
     reasoning_content: str = ""  # 思维链（思考模式下非空）
+    reasoning_trace: list[str] = field(default_factory=list)  # 单次工具循环内的思维链列表
     tool_calls_trace: list[dict] = field(default_factory=list)  # 工具调用链路追踪
 
 
@@ -91,6 +91,7 @@ class LLMClient:
         return LLMResponse(
             content=content or "",
             reasoning_content=reasoning_content or "",
+            reasoning_trace=[reasoning_content] if reasoning_content else [],
         )
 
     # ------------------------------------------------------------------
@@ -109,7 +110,7 @@ class LLMClient:
         # 核心来源说明：trace 由 ToolCallSession.run 在每次 tool_executor 调用后累积。
         # 大白话：每调用一次工具，就记一条 {name, arguments, result} 到 trace 里。
         # 这就是上层看到的“尝试轨迹”数据源。
-        content, last_reasoning, trace = self._tool_call_session.run(
+        content, last_reasoning, trace, reasoning_trace = self._tool_call_session.run(
             messages=messages,
             tools=tools,
             tool_executor=tool_executor,
@@ -121,6 +122,7 @@ class LLMClient:
         return LLMResponse(
             content=content or "",
             reasoning_content=last_reasoning,
+            reasoning_trace=reasoning_trace,
             tool_calls_trace=trace,
         )
 
@@ -129,13 +131,15 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def clear_reasoning_content(messages: list) -> None:
+    def clear_reasoning_content(messages: list[dict]) -> None:
         """清除 messages 中所有 assistant 消息的 reasoning_content。
 
         在新 turn 开始前调用，避免传入历史思维链。
         当前主链仅处理 dict 形式消息。
         """
-        MessageSanitizer.clear_reasoning_content(messages)
+        for message in messages:
+            if isinstance(message, dict) and "reasoning_content" in message:
+                message["reasoning_content"] = None
 
 
 # ------------------------------------------------------------------

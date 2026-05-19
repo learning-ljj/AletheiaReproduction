@@ -417,7 +417,15 @@ class MarkdownRenderer:
 				lines.append(f"#### Turn {turn_id} · {node}")
 
 				if node in ("GENERATOR", "REVISER"):
-					reasoning = str(event.get("reasoning_content", "") or "")
+					reasoning_payload = event.get("reasoning_content", "")
+					if isinstance(reasoning_payload, list):
+						reasoning = "\n\n".join(
+							f"### 第 {i+1} 轮推理\n{item}"
+							for i, item in enumerate(reasoning_payload)
+							if item
+						)
+					else:
+						reasoning = str(reasoning_payload or "")
 					reasoning_info = self.summarizer.summarize_reasoning(role=node, raw_cot=reasoning)
 					lines.append("- 思维链摘要：")
 					for idx, item in enumerate(reasoning_info.get("step_summary", []), start=1):

@@ -66,8 +66,10 @@ _TOOL_SCHEMAS: list[dict] = [
                 "Read one specific layer from an artifact markdown file under runs/{problem_id}/artifact. "
                 "Path must include the full run path like runs/<problem_id>/artifact/lemmas/<file>.md or "
                 "runs/<problem_id>/artifact/papers/<file>.md (do not use placeholders or short paths). "
-                "layer=1 reads the full YAML frontmatter, layer=2 reads Layer2 body, "
-                "layer=3 reads Layer3 source metadata."
+                "layer=1 reads the full YAML frontmatter. "
+                "For lemmas, layer=2 reads the proof body; if no Layer2 header exists, "
+                "it falls back to the text immediately after frontmatter. Lemmas do not support layer=3. "
+                "For papers, layer=2 reads the extracted body (## Layer2-...), and layer=3 reads the source metadata (## Layer3-...)."
             ),
             "parameters": {
                 "type": "object",

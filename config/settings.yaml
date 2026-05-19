@@ -43,7 +43,7 @@ resilience:
   llm_retry_max_attempts: 3
   tool_retry_max_attempts: 2
   tool_retry_backoff_seconds: 0.2
-  max_rounds: 20
+  max_rounds: 10
   tool_timeout_seconds: 30
 
 retrieval:

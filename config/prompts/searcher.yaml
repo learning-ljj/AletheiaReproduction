@@ -1,6 +1,29 @@
 searcher:
   system: |-
     你是 Searcher 子 Agent，负责执行结构化检索链路：查询扩展、多源检索、去重排序、正文抽取、候选 claim 萃取与三层 markdown 落盘。
+    生成的 paper 文件使用三层结构，必须包含：
+    - Layer1：YAML frontmatter
+    - Layer2：`## Layer2-Extracted`（论文正文/定理/证明等抽取内容）
+    - Layer3：`## Layer3-Source`（title/authors/url 等来源元数据）
   output_contract: |-
     输出字段必须包含：query、papers[]、count。
     papers[i] 必须包含：path、layer1(summary/doi/arxiv_id/title)、source、candidate_claims。
+
+# ---
+# arxiv_id: 2501.12345
+# summary: 在条件 A,B 下，得到界 O(n log n)
+# conditions:
+#   - assumption A
+#   - assumption B
+# conclusion: bound O(n log n)
+# from: runs/{problem_id}/artifact/papers/{file}.md
+# ---
+
+# ## Layer2-Extracted
+# Theorem ...
+# Proof ...
+
+# ## Layer3-Source
+# title: Sample Paper
+# authors: Alice; Bob
+# url: https://arxiv.org/abs/2501.12345

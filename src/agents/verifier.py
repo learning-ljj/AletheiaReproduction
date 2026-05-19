@@ -74,7 +74,7 @@ class VerifierAgent:
             stream_prefix="VERIFIER-P2",
         )
 
-        # 新 turn 前清理历史 reasoning_content，避免无意义上下文膨胀。
+        # 新 user message 前清理历史 reasoning_content，避免占用上下文。
         self.llm_client.clear_reasoning_content(messages)
 
         # Phase3 负责综合判断和输出最终验证结论 + 验证报告 + 逐条引用审查。

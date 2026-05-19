@@ -343,6 +343,7 @@ class ProblemMemory:
             self.lemmas_dir, desired_name
         )
 
+        # 添加 from 路径到 frontmatter，指向 runs/{problem_id}/artifact/lemmas/{final_name}，以便后续检索和引用时明确来源。
         run_path = f"runs/{self.problem_id}/artifact/lemmas/{final_name}"
         normalized_content = self._replace_lemma_source(
             normalized_content,
@@ -444,7 +445,15 @@ class ProblemMemory:
         return len(self._new_lemma_paths)
 
     def list_lemma_context_items(self, limit: int = 12) -> list[str]:
-        """获取引理/论文的轻量级摘要列表，用于上下文注入。"""
+        """获取引理/论文的轻量级摘要列表，用于上下文注入。
+        
+        返回已有引理的元数据列表（Layer1 frontmatter），每条元数据包含：
+        - title：引理名称
+        - conclusion：结论陈述
+        - from：引理文件路径（便于模型使用 [cite:...] 进行引用）
+        
+        模型应检查此列表，对已存在的引理只输出 [cite:...] 引用而不重复生成。
+        """
         self.init_dirs()
         out: list[str] = []
         for folder in (self.lemmas_dir, self.papers_dir):
@@ -481,7 +490,16 @@ class ProblemMemory:
                     filename = self._resolve_filename_collision_in_dir(self.papers_dir, desired)
         if filename is None:
             filename = f"paper_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.md"
-        return self._save_markdown(self.papers_dir, content, filename=filename)
+
+        # 添加 from 路径到 frontmatter，指向 runs/{problem_id}/artifact/papers/{filename}，以便后续检索和引用时明确来源。
+        run_path = f"runs/{self.problem_id}/artifact/papers/{filename}"
+        normalized_content = self._replace_lemma_source(
+            normalized_content,
+            from_path=run_path,
+        )
+        # 写入
+        target = self._save_markdown(self.papers_dir, normalized_content, filename=filename)
+        return target
 
     def add_error(self, content: str, filename: str | None = None) -> Path:
         """添加一条错误记录工件。"""

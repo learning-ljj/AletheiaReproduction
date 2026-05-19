@@ -145,6 +145,9 @@ class Orchestrator:
 
             content = resp.content if hasattr(resp, "content") else str(resp)
             reasoning_content = getattr(resp, "reasoning_content", "")
+            reasoning_trace = getattr(resp, "reasoning_trace", None)
+            if reasoning_trace is None:
+                reasoning_trace = [reasoning_content] if reasoning_content else []
             tool_calls_trace = getattr(resp, "tool_calls_trace", [])
             state.current_proof = content or ""
             event_payload = {
@@ -160,7 +163,7 @@ class Orchestrator:
                 ),
             }
             if node != "REVISER":
-                event_payload["reasoning_content"] = reasoning_content
+                event_payload["reasoning_content"] = reasoning_trace
             self.problem_memory.append_event(event_payload)
         except Exception as exc:  # noqa: BLE001
             execution_error = f"{type(exc).__name__}: {str(exc)}"
@@ -178,7 +181,7 @@ class Orchestrator:
                 timestamp=self._now(),
                 event_detail={
                     "content_length": len(state.current_proof),
-                    "has_reasoning": bool(getattr(resp, "reasoning_content", "")),
+                    "has_reasoning": bool(reasoning_trace),
                 } if execution_error is None else None,
             )
 

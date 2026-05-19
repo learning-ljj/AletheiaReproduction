@@ -82,16 +82,19 @@ class BaseAgent:
                     stream_prefix=self.stream_prefix,
                 )
 
+            reasoning_trace = getattr(response, "reasoning_trace", []) or []
+            last_reasoning = reasoning_trace[-1] if reasoning_trace else (getattr(response, "reasoning_content", "") or "")
             self.messages.append({
                 "role": "assistant",
                 "content": response.content or "",
-                "reasoning_content": getattr(response, "reasoning_content", "") or "",
+                "reasoning_content": last_reasoning,
             })
 
             # 统一返回完整对象，保证上游随时能拿到 trace 做运行审计。
             return LLMResponse(
                 content=response.content or "",
-                reasoning_content=getattr(response, "reasoning_content", "") or "",
+                reasoning_content=last_reasoning,
+                reasoning_trace=reasoning_trace,
                 tool_calls_trace=getattr(response, "tool_calls_trace", []) or [],
             )
         finally:
