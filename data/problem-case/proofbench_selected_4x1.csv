@@ -1,0 +1,138 @@
+Problem ID,Problem,Solution,Grading guidelines,Category,Level,Short Answer,Source
+PB-Basic-011,"Let $A\subset \{1,2,\ldots,2000\}$, $|A|=1000$, such that $a$ does not divide $b$ for all distinct elements $a,b\in A$. For a set $X$ as above let us denote with $m_{X}$ the smallest element in $X$. Find $\min m_{A}$ (for all $A$ with the above properties).","Partition the set $\{ 1,2,3,\cdots ,2000\}$ into 1000 parts $P_{1}\cup P_{2}\cup P_{3}\cup \cdots \cup P_{1000}$ such that $P_{a}$ contains all numbers of the form $2^{b}(2a-1)$ where $b$ is a nonnegative integer.
+
+ $A$ cannot have two elements from the same part (otherwise one would divide the other by a power of 2). So $A$ must have exactly one element from each part.
+
+ Let $t_{a}$ be the element of $A$ contained in $P_{a}$. Then consider $t_{1},t_{2},t_{5},\cdots $, each being a product of a power of 3 and a power of 2. The highest power of 2 dividing $t_{1}$ must be strictly greater than the highest power of 2 dividing $t_{2}$ (otherwise $t_{1}$ divides $t_{2}$). Similarly, the highest powers of 2 dividing $t_{1},t_{2},t_{5},\cdots $ must be a strictly decreasing sequence. In particular, there are 7 numbers in the sequence, so $t_{1}$ must be at least $2^6=64$. In a similar manner, if $666<3^{b}(2a-1)<2000$, then $t_{a}\geq 2^{b}(2a-1)$. (Here we look at the numbers where the odd factors are $(2a-1)$ times a power of 3.)
+
+ Suppose one of the $t_{a}$ is less than 64. Then we have
+ \[666<3^{b}(2a-1)\leq (3/2)^{b}t_{a}<64(3/2)^{b}\]
+ so that $b\geq 6$. However, this means either $a=1$ (we know $t_{1}\geq 64$) or $t_{a}\geq 3\cdot 2^{6}$, which is a contradiction. Therefore, every element must be at least 64.
+
+
+ We could attain a minimum by setting $t_{a}=2^{f(a)}(2a-1)$ where $f(a)$ satisfies $666<3^{f(a)}(2a-1)<2000$ if we can show it works. To do this, we must show that $t_{x}$ cannot divide $t_{y}$ for any $x\neq y$. Suppose there were such $x$ and $y$. Then
+ \[2^{u}(2x-1)|2^{v}(2y-1)\]
+ where $u=f(x)$ and $v=f(y)$. In particular, $u\leq v$ and $(2x-1)|(2y-1)$.
+
+ In order to have $(2x-1)|(2y-1)$, we must have $2y-1\geq 3(2x-1)$, but this implies
+ \[3^{u+1}(2x-1) \ge 2001 >3^{v}(2y-1)\geq 3^{v+1}(2x-1)\]
+ and $u>v$, a contradiction! Therefore $\boxed{64}$ is the minimum.","(Partial)
+ 1. Constructed the example for the answer $64$.
+ 2. Decomposed the set $\{1,2,...,2000\}$ as in the solution and analyzed intersections of $A$ and these decomposed subsets.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Combinatorics,IMO-easy,$64$,(Modified) Vietnam TST 2007 P5
+PB-Basic-002,"Show that $x^2 + y^2 + z^2 + t^2 \ge xyzt$ for any positive real numbers $x, y, z, t$ that satisfy $2(x + y + z + t) \ge xyzt$.","Assume the contrary that $xyzt> x^2+y^2+z^2+t^2$. Using AM-GM, we have $xyzt> x^2+y^2+z^2+t^2 \geq 4\sqrt{xyzt}$, which means that $xyzt > 16$. From here, this implies $2(x+y+z+t) >16$ from the condition $2(x+y+z+t) \geq xyzt$.
+ However, from Cauchy-Scwarz, we have $x^2+y^2+z^2+t^2 \ge\frac{1}{4}(x+y+z+t)^2>2(x+y+z+t) \geq xyzt$. This is a contradiction.
+
+ Therefore: $x^2+y^2+z^2+t^2\ge xyzt$.","(Partial)
+ 1. Attempted the ""proof by contradiction"" and made a positive progress based on it.
+ 2. Applied the AM-GM inequality correctly.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Algebra,pre-IMO, ,"(Modified)  All-Russian MO 2013, Grade 11, P6"
+PB-Basic-012,"Consider a positive integer $n$. We define $f(n)$ as the number of pairs of paths on an $n \times n$ grid that:
+
+ (1) Both paths start at $(0, 0)$ (bottom left corner) and end at $(n, n)$ (top right corner).
+
+ (2) Both paths allow only right or up movements (one unit each).
+
+ (3) The $y$ coordinate of the first path never exceeds the y coordinate of the second path at any timestep.
+
+ For example, when $n = 2$, consider the following pair of paths:
+
+ The first path: $(0,0) \rightarrow (1,0) \rightarrow (1,1) \rightarrow (2,1) \rightarrow (2,2)$
+ The second path: $(0,0) \rightarrow (1,0) \rightarrow (2,0) \rightarrow (2,1) \rightarrow(2,2)$
+ The example is invalid because after 2 steps, the y coordinate of the first path (1) is larger than the y coordinate of the second path (0).
+
+ However, the following example is valid,
+
+ The first path: $(0,0) \rightarrow (1,0) \rightarrow (2,0) \rightarrow (2,1) \rightarrow (2,2)$
+ The second path: $(0,0) \rightarrow (1,0) \rightarrow (1,1) \rightarrow (2,1) \rightarrow (2,2)$
+
+ since the y coordinate of the first path is never larger than the second path. Find $f(10)$.","If we move the second path up-left by one unit, the pair of paths corresponds to a pair of paths from (0,0) to (10,10) and from (-1,1) to (9,11) which are non-intersecting. The total number of path pairs is $\binom{20}{10}^2$. The number of intersecting pairs corresponds to the number of pair of paths from (0,0) to (9, 11) and paths from (-1, 1) to (10,10), because interchanging the two paths at the first intersection point gives a one-to-one correspondence, and thus equals $\binom{20}{9}^2$. Therefore there are $\binom{20}{10}^2 - \binom{20}{9}^2$ paths.","(Partial)
+ 1. Came up with an idea of correcting shifting (shifting only one path by $+1$ in the $y$-coordinate) or found an equivalent idea with it.
+(Almost)
+ 1. Made a minor mistake when counting.",Combinatorics,IMO-medium,$\binom{20}{10}^2 - \binom{20}{9}^2$ ,Novel Problem
+PB-Advanced-003,"Let $ ABC $ be an acute triangle which is not an isosceles.Let $ I $ be the incenter and let $ \omega $ be the circumcircle of $ABC$. Let the intersections of lines $ AI $, $ BI $, and $ CI $ with $ BC $, $ CA $, and $ AB $ be $ D $, $ E $, and $ F $ respectively. Also, let $ \omega_A $ be the circle that lies inside $\angle BAC$, tangent to lines $ AB $ and $ AC $, and internally tangent to the circumcircle $ \omega $ at $ T_A $. Similarly, define $ T_B $ and $ T_C $ for points $ B $ and $ C $ respectively. Prove that there exist two points $ X $ and $ Y $ such that the circumcircles of triangles $ ADT_A $, $ BET_B $, and $ CFT_C $ all pass through $ X $ and $ Y $.","Let's define some points as follows:
+ \begin{enumerate}
+  \item Let $A_1$, $B_1$, and $C_1$ be the points of tangency of the incircle with sides $BC$, $CA$, and $AB$, respectively.
+  \item Let $N$ be the midpoint of arc $BC$.
+  \item Let $S_A$ be the intersection of line $NT_A$ and side $BC$ (if they are parallel, consider $S_A$ as the point at infinity).
+  \item Let $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$ be the circumcircles of triangles $ADT$, $BET$, and $CFT$, respectively.
+ \end{enumerate}
+
+ <Step 1> Finding a point on the radical axis of circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$
+
+ By the well-known property of Mixtilinear circles, $AT_A$ is isogonal to the line joining the point of tangency of the excircle opposite to vertex $A$ and vertex $A$.
+ Similarly, consider the lines joining the points of tangency of the excircles opposite to vertices $B$ and $C$ with their respective vertices. It is well-known that these three lines intersect at a single point, the Nagel point.
+ Therefore, lines $AT_A$, $BT_B$, and $CT_C$ also intersect at a single point, which is the isogonal conjugate of the Nagel point. Let this point be $T$.
+ Clearly, $T$ lies on segments $AT_A$, $BT_B$, and $CT_C$, and is inside circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$.
+
+ Furthermore, by the power of a point theorem with respect to the circumcircle of triangle $ABC$, we have
+ \[AT \cdot TT_A = BT \cdot TT_B = CT \cdot TT_C.\]
+ Therefore, point $T$ has the same power with respect to circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C.$
+
+ Hence, to prove the statement, it is sufficient to find another point that has the same power with respect to circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$.
+
+ <Step 2> $(A, D, T_A, S_A)$ is cyclic
+
+ $\angle ADS_A = \frac{\angle A}{2} + \angle C = \angle ACN = \angle A T_A SA$, so $(A, D, T_A, S_A)$ is cyclic.
+
+ <Step 3> $\angle AIS_A = 90^\circ$
+
+ This is also a well-known property of Mixtilinear circles. By angle chasing, we can show that the circumcircles of triangles $BIC$ and $NIT_A$ are tangent to each other at point $I$.
+ Let's consider the radical axes of these three circles:
+ \begin{itemize}
+  \item The radical axis of the circumcircles of triangles $BIC$ and $NITA$ is the line passing through $I$ and perpendicular to $AI$.
+  \item The radical axis of the circumcircles of triangles $BIC$ and $ABC$ is $BC$.
+  \item The radical axis of the circumcircles of triangles $ABC$ and $NITA$ is $NT_A$.
+ \end{itemize}
+ Therefore, the intersection point $S_A$ of $BC$ and $NT_A$ satisfies $\angle AIS_A = 90^\circ$.
+
+ <Step 4> Inversion with respect to the incircle of triangle $ABC$
+
+ Now, let's invert the figure with respect to the incircle $I$. In particular, let's pay attention to which circle $I$ maps to under this inversion.
+ Let $A'$, $B'$, and $C'$ be the images of points $A$, $B$, and $C$ under the inversion. Also, let $D'$ and $S_A'$ be the images of points $D$ and $S_A$ under the inversion.
+
+ Let's investigate the properties of the inverted points.
+ Since $DA_1$ is tangent to the circle, $D'$ is the foot of the perpendicular from $A_1$ to $ID$. $A'$ is the midpoint of $B_1C_1$. Finally, since $SA_1$ is tangent to the circle, $S_A'$ is the foot of the perpendicular from $A_1$ to $IS_A$.
+ By the conclusion of Step 3, $A_1S_A'$ is parallel to $AI$.
+ By the observation from step 2, the inversion of the circumcircle of $ADT_A$ is the circumcircle of triangle $A'S_A'D'$. Similarly, the circumcircles of $B'S_B'E'$ and $C'S_C'F'$ are our desired circles. Let's prove that the three circumcircles pass through two common points.
+
+ <Step 5> The circumcircles of triangles $A'S_A'D', B'S_B'E'$, and $C'S_C'F'$ pass through two common points
+
+ Now, let's consider the figure with respect to triangle $A_1B_1C_1$.
+
+ In triangle $A_1B_1C_1$, point $I$ is the circumcenter. Let $H_1$ be the foot of the perpendicular from $A_1$ to $B_1C_1$.
+ Then, points $A'$, $S_A'$, and $D'$ are constructed as follows:
+ \begin{itemize}
+  \item Point $A'$ is the midpoint of $B_1C_1$.
+  \item Point $D'$ is the intersection of the line parallel to $B_1C_1$ passing through $A_1$ and the perpendicular bisector of $B_1C_1$.
+  \item Point $S_A'$ is the foot of the perpendicular from $I$ to $AH_1$.
+ \end{itemize}
+ Through this construction, we can find that the circumcenter $O_A$ of triangle $A'S_A'D'$ lies on the perpendicular bisector of $A'D'$, which is the line $B'C'$.
+ Now, let's consider the point $O_A'$ which is the reflection of $O_A$ with respect to the midpoint of $B'C'$.
+
+ <Step 6> $O_A'$ is the circumcenter of triangle $A_1IH_1$
+
+ Since $A'$, $B'$, $C'$, and $H_1$ lie on the nine-point circle of triangle $ABC$, these four points are concyclic. Therefore, quadrilateral $A'H_1 B'C'$ is an isosceles trapezoid, and points $A'$ and $H_1$ are symmetric with respect to the perpendicular bisector of line $B_1 C_1$.
+ Furthermore, $A_1$ and $D'$ are symmetric with respect to the perpendicular bisector of line $B'C'$.
+ Therefore, triangle $AIH_1$ is the reflection of triangle $A'S_A'D'$ across the perpendicular bisector of line $B'C'$, and the circumcenters $O_A$ and $O_A'$ are also symmetric with respect to each other.
+
+ <Step 7> $O_A, O_B$, and $O_C$ are collinear
+
+ Now, let's define $O_B, O_C, O_B'$, and $O_C'$ similarly, and show that $O_A, O_B$, and $O_C$ are collinear.
+ First, let's show that $O_A'$, $O_B'$, and $O_C'$ are collinear. It is sufficient to prove that the circumcircles of triangles $AIH_1$, $BIH_B$, and $C_1IH_C$ have a common radical axis.
+ On the other hand, the circumcenter $I$ of $ABC$ and the orthocenter $A_1H_A \cap B_1H_B \cap C_1H_C$ have the same power with respect to these three circumcircles. Therefore, these three circles have a common radical axis. Hence, the centers of these three circles, $O_A'$, $O_B'$, and $O_C'$, are collinear.
+ Now, by Menelaus' theorem, we have
+ \[\frac{C'O_A' \cdot B'O_C' \cdot A'O_B'}{O_A'B' \cdot O_C'A' \cdot O_B'C'} = 1\]
+ \[\frac{C'O_A \cdot B'O_C \cdot A'O_B}{O_AB' \cdot O_CA' \cdot O_BC'} = 1\]
+ Therefore, $O_A, O_B$, and $O_C$ are also collinear.
+
+ <Step 8> Circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ have two common points
+
+ Now, the circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ are inverted into circles. The centers of these three circles are collinear, as proven earlier. Therefore, these three circles either have a common radical axis or their radical axes are parallel. This property remains true before the inversion.
+ However, in Step 1, we found point $T$ that has the same power with respect to these three circles. Therefore, circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ have a common radical axis.
+ Furthermore, since point $T$ lies inside all three circles, this common radical axis intersects each circle at two distinct points. Therefore, the three circles have two common points.","(Partial)
+ 1. Showed that $AT_a$, $BT_b, CT_c$ are concurrent (there are many possible solutions).
+(Almost)
+ 1. Verification contains minor mistakes only.",Geometry,IMO-hard, ,Novel Problem

@@ -1,0 +1,581 @@
+Problem ID,Problem,Solution,Grading guidelines,Category,Level,Short Answer,Source
+PB-Basic-002,"Show that $x^2 + y^2 + z^2 + t^2 \ge xyzt$ for any positive real numbers $x, y, z, t$ that satisfy $2(x + y + z + t) \ge xyzt$.","Assume the contrary that $xyzt> x^2+y^2+z^2+t^2$. Using AM-GM, we have $xyzt> x^2+y^2+z^2+t^2 \geq 4\sqrt{xyzt}$, which means that $xyzt > 16$. From here, this implies $2(x+y+z+t) >16$ from the condition $2(x+y+z+t) \geq xyzt$.
+ However, from Cauchy-Scwarz, we have $x^2+y^2+z^2+t^2 \ge\frac{1}{4}(x+y+z+t)^2>2(x+y+z+t) \geq xyzt$. This is a contradiction.
+
+ Therefore: $x^2+y^2+z^2+t^2\ge xyzt$.","(Partial)
+ 1. Attempted the ""proof by contradiction"" and made a positive progress based on it.
+ 2. Applied the AM-GM inequality correctly.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Algebra,pre-IMO, ,"(Modified)  All-Russian MO 2013, Grade 11, P6"
+PB-Basic-011,"Let $A\subset \{1,2,\ldots,2000\}$, $|A|=1000$, such that $a$ does not divide $b$ for all distinct elements $a,b\in A$. For a set $X$ as above let us denote with $m_{X}$ the smallest element in $X$. Find $\min m_{A}$ (for all $A$ with the above properties).","Partition the set $\{ 1,2,3,\cdots ,2000\}$ into 1000 parts $P_{1}\cup P_{2}\cup P_{3}\cup \cdots \cup P_{1000}$ such that $P_{a}$ contains all numbers of the form $2^{b}(2a-1)$ where $b$ is a nonnegative integer.
+
+ $A$ cannot have two elements from the same part (otherwise one would divide the other by a power of 2). So $A$ must have exactly one element from each part.
+
+ Let $t_{a}$ be the element of $A$ contained in $P_{a}$. Then consider $t_{1},t_{2},t_{5},\cdots $, each being a product of a power of 3 and a power of 2. The highest power of 2 dividing $t_{1}$ must be strictly greater than the highest power of 2 dividing $t_{2}$ (otherwise $t_{1}$ divides $t_{2}$). Similarly, the highest powers of 2 dividing $t_{1},t_{2},t_{5},\cdots $ must be a strictly decreasing sequence. In particular, there are 7 numbers in the sequence, so $t_{1}$ must be at least $2^6=64$. In a similar manner, if $666<3^{b}(2a-1)<2000$, then $t_{a}\geq 2^{b}(2a-1)$. (Here we look at the numbers where the odd factors are $(2a-1)$ times a power of 3.)
+
+ Suppose one of the $t_{a}$ is less than 64. Then we have
+ \[666<3^{b}(2a-1)\leq (3/2)^{b}t_{a}<64(3/2)^{b}\]
+ so that $b\geq 6$. However, this means either $a=1$ (we know $t_{1}\geq 64$) or $t_{a}\geq 3\cdot 2^{6}$, which is a contradiction. Therefore, every element must be at least 64.
+
+
+ We could attain a minimum by setting $t_{a}=2^{f(a)}(2a-1)$ where $f(a)$ satisfies $666<3^{f(a)}(2a-1)<2000$ if we can show it works. To do this, we must show that $t_{x}$ cannot divide $t_{y}$ for any $x\neq y$. Suppose there were such $x$ and $y$. Then
+ \[2^{u}(2x-1)|2^{v}(2y-1)\]
+ where $u=f(x)$ and $v=f(y)$. In particular, $u\leq v$ and $(2x-1)|(2y-1)$.
+
+ In order to have $(2x-1)|(2y-1)$, we must have $2y-1\geq 3(2x-1)$, but this implies
+ \[3^{u+1}(2x-1) \ge 2001 >3^{v}(2y-1)\geq 3^{v+1}(2x-1)\]
+ and $u>v$, a contradiction! Therefore $\boxed{64}$ is the minimum.","(Partial)
+ 1. Constructed the example for the answer $64$.
+ 2. Decomposed the set $\{1,2,...,2000\}$ as in the solution and analyzed intersections of $A$ and these decomposed subsets.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Combinatorics,IMO-easy,$64$,(Modified) Vietnam TST 2007 P5
+PB-Basic-012,"Consider a positive integer $n$. We define $f(n)$ as the number of pairs of paths on an $n \times n$ grid that:
+
+ (1) Both paths start at $(0, 0)$ (bottom left corner) and end at $(n, n)$ (top right corner).
+
+ (2) Both paths allow only right or up movements (one unit each).
+
+ (3) The $y$ coordinate of the first path never exceeds the y coordinate of the second path at any timestep.
+
+ For example, when $n = 2$, consider the following pair of paths:
+
+ The first path: $(0,0) \rightarrow (1,0) \rightarrow (1,1) \rightarrow (2,1) \rightarrow (2,2)$
+ The second path: $(0,0) \rightarrow (1,0) \rightarrow (2,0) \rightarrow (2,1) \rightarrow(2,2)$
+ The example is invalid because after 2 steps, the y coordinate of the first path (1) is larger than the y coordinate of the second path (0).
+
+ However, the following example is valid,
+
+ The first path: $(0,0) \rightarrow (1,0) \rightarrow (2,0) \rightarrow (2,1) \rightarrow (2,2)$
+ The second path: $(0,0) \rightarrow (1,0) \rightarrow (1,1) \rightarrow (2,1) \rightarrow (2,2)$
+
+ since the y coordinate of the first path is never larger than the second path. Find $f(10)$.","If we move the second path up-left by one unit, the pair of paths corresponds to a pair of paths from (0,0) to (10,10) and from (-1,1) to (9,11) which are non-intersecting. The total number of path pairs is $\binom{20}{10}^2$. The number of intersecting pairs corresponds to the number of pair of paths from (0,0) to (9, 11) and paths from (-1, 1) to (10,10), because interchanging the two paths at the first intersection point gives a one-to-one correspondence, and thus equals $\binom{20}{9}^2$. Therefore there are $\binom{20}{10}^2 - \binom{20}{9}^2$ paths.","(Partial)
+ 1. Came up with an idea of correcting shifting (shifting only one path by $+1$ in the $y$-coordinate) or found an equivalent idea with it.
+(Almost)
+ 1. Made a minor mistake when counting.",Combinatorics,IMO-medium,$\binom{20}{10}^2 - \binom{20}{9}^2$ ,Novel Problem
+PB-Basic-013,"Each of 8 boxes contains 6 balls. Each ball has been colored with one of 22 colors. If no two balls in the same box are the same color, prove that there are two colors that occur together in more than one box.","Let’s say a color ""connects"" two boxes if it appears in both. We want to show there are two colors that connect the same pair of boxes.
+
+ Let $c_i$ denote the number of balls with color $i$. Then, the total number of times a color connects two boxes is $N = \sum_{i=1}^{22} \binom{c_i}{2}$. We also know the total number of balls is $48$, so $\sum_{i=1}^{22} c_i = 48$. We now try to find the minimum possible value of $N$.
+
+ To do this, we first analyze the quantity $X = \sum_{i=1}^{22} (c_i - 2)^2$. If at $|c_i - 2| >= 2$ for some $i$, then clearly $X \ge 4$. Otherwise, all the $c_i$ are 1, 2, or 3. Then, in order for them to sum to 48, at most 18 of them can be 2, so once again $X \ge 4$. We then have
+
+ $4 \le X = 2N - 3 \sum_{i=1}^{22} c_i + 4 * 22 = 2N - 3 * 48 + 4 * 22 = 2N - 56$,
+
+ so that $N \ge 30$. But note that there are only $\binom{8}{2} = 28$ pairs of boxes. Thus, by the pigeonhole principle, some two colors connect the same pair of boxes, as desired.","(Partial)
+ 1. Applied some double counting argument but did not progress further.
+(Almost)
+ 1. Solved the problem with some mistakes (such as calculation mistakes).",Combinatorics,pre-IMO, ,(Modified) USAMO 2001 P1
+PB-Basic-017,Find all non-negative integer $n$ such that $A_n = 1 + 3^{20(n^2+n+1)} + 9^{14(n^2+n+1)}$ is a prime number.,"Substitute $a = 3^{4(n^2+n+1)} \geq 81 \in Z^+$, we have $A_n = a^7 + a^5 + 1$. Observe that $a^7 + a^5 + 1 = (a^2+a+1)(a^5-a^4+a^3-a+1)$. Since $a \geq 81$, we have $a^2+a+1 > 1$ and $a^5-a^4+a^3-a+1 > 1$. Hence, $A_n$ is not a prime number for all $n \geq 0$.","(Partial)
+ 1. Applied correct substitution to $x^7+x^5+1$ or $x^{14}+x^{10}+1$ or $x^{28}+x^{20}+1$
+(Almost)
+ 1. Correctly applied substitution and factorization but with made minor mistakes.",Number theory,pre-IMO,There is no such $n$.,folklore
+PB-Basic-019,"For any positive integer $n$, let $\delta(n)$ be the largest odd divisor of $n$. Prove for any $N>0$ that we have
+ \[
+ \left| \sum_{n=1}^N \frac{\delta(n)}{n}- \frac{2}{3}N \right| <1.
+ \]","Observe the following: If the greatest power of $2$ that divides $n$ is $2^k$, the greatest odd divisor dividing $n$ is $\frac{n}{2^k}$.
+
+ Let $\sum_{n=1}^N \frac{\delta(n)}{n}$ be $S(N)$.
+
+ Let the greatest power of $2$ smaller or equal to $N$ be $2^k$. Then, $2^k \leq N <2^{k+1}$ holds. Using the observation, we get the following equation:
+ $\sum_{n=1}^{2^k} \frac{\delta(n)}{n} = \sum_{i=0}^{k-1} \frac{2^{k-1-i}}{2^i} + \frac{1}{2^k} = 2^{k-1}(\frac{1-\frac{1}{4^{k}}}{\frac{3}{4}}) + \frac{1}{2^k}$
+
+ Now observe that for $2^k < n <2^{k+1}$, $\frac{\delta(n)}{n} = \frac{\delta(n-2^k)}{n-2^k}$. Therefore, we have that $S(N)= S(N-2^k)+ (\frac{2^{k+1}}{3})(1-\frac{1}{4^{k}}) + \frac{1}{2^k}$
+
+ Using this, we have that $S(N) - \frac{2N}{3} = S(N-2^k) - \frac{2(N-2^k)}{3} + \frac{1}{3\cdot 2^k}$
+
+ Therefore, $|S(N) - \frac{2N}{3}|\leq \sum_{k=0}^\infty \frac{1}{3\cdot 2^k} \leq 1$","(Partial)
+ 1. Expressed $\sum \delta(n)/n$ as negative powers of 2's and attempted to rearrange the summation.
+(Almost)
+ 1. Successfully rearranged the summation, and counted $2^{-k}$ correctly.",Number theory,IMO-easy, ,(translated) 2003 Korea Winter Program Practice Test
+PB-Advanced-003,"Let $ ABC $ be an acute triangle which is not an isosceles.Let $ I $ be the incenter and let $ \omega $ be the circumcircle of $ABC$. Let the intersections of lines $ AI $, $ BI $, and $ CI $ with $ BC $, $ CA $, and $ AB $ be $ D $, $ E $, and $ F $ respectively. Also, let $ \omega_A $ be the circle that lies inside $\angle BAC$, tangent to lines $ AB $ and $ AC $, and internally tangent to the circumcircle $ \omega $ at $ T_A $. Similarly, define $ T_B $ and $ T_C $ for points $ B $ and $ C $ respectively. Prove that there exist two points $ X $ and $ Y $ such that the circumcircles of triangles $ ADT_A $, $ BET_B $, and $ CFT_C $ all pass through $ X $ and $ Y $.","Let's define some points as follows:
+ \begin{enumerate}
+  \item Let $A_1$, $B_1$, and $C_1$ be the points of tangency of the incircle with sides $BC$, $CA$, and $AB$, respectively.
+  \item Let $N$ be the midpoint of arc $BC$.
+  \item Let $S_A$ be the intersection of line $NT_A$ and side $BC$ (if they are parallel, consider $S_A$ as the point at infinity).
+  \item Let $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$ be the circumcircles of triangles $ADT$, $BET$, and $CFT$, respectively.
+ \end{enumerate}
+
+ <Step 1> Finding a point on the radical axis of circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$
+
+ By the well-known property of Mixtilinear circles, $AT_A$ is isogonal to the line joining the point of tangency of the excircle opposite to vertex $A$ and vertex $A$.
+ Similarly, consider the lines joining the points of tangency of the excircles opposite to vertices $B$ and $C$ with their respective vertices. It is well-known that these three lines intersect at a single point, the Nagel point.
+ Therefore, lines $AT_A$, $BT_B$, and $CT_C$ also intersect at a single point, which is the isogonal conjugate of the Nagel point. Let this point be $T$.
+ Clearly, $T$ lies on segments $AT_A$, $BT_B$, and $CT_C$, and is inside circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$.
+
+ Furthermore, by the power of a point theorem with respect to the circumcircle of triangle $ABC$, we have
+ \[AT \cdot TT_A = BT \cdot TT_B = CT \cdot TT_C.\]
+ Therefore, point $T$ has the same power with respect to circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C.$
+
+ Hence, to prove the statement, it is sufficient to find another point that has the same power with respect to circles $\Gamma_A$, $\Gamma_B$, and $\Gamma_C$.
+
+ <Step 2> $(A, D, T_A, S_A)$ is cyclic
+
+ $\angle ADS_A = \frac{\angle A}{2} + \angle C = \angle ACN = \angle A T_A SA$, so $(A, D, T_A, S_A)$ is cyclic.
+
+ <Step 3> $\angle AIS_A = 90^\circ$
+
+ This is also a well-known property of Mixtilinear circles. By angle chasing, we can show that the circumcircles of triangles $BIC$ and $NIT_A$ are tangent to each other at point $I$.
+ Let's consider the radical axes of these three circles:
+ \begin{itemize}
+  \item The radical axis of the circumcircles of triangles $BIC$ and $NITA$ is the line passing through $I$ and perpendicular to $AI$.
+  \item The radical axis of the circumcircles of triangles $BIC$ and $ABC$ is $BC$.
+  \item The radical axis of the circumcircles of triangles $ABC$ and $NITA$ is $NT_A$.
+ \end{itemize}
+ Therefore, the intersection point $S_A$ of $BC$ and $NT_A$ satisfies $\angle AIS_A = 90^\circ$.
+
+ <Step 4> Inversion with respect to the incircle of triangle $ABC$
+
+ Now, let's invert the figure with respect to the incircle $I$. In particular, let's pay attention to which circle $I$ maps to under this inversion.
+ Let $A'$, $B'$, and $C'$ be the images of points $A$, $B$, and $C$ under the inversion. Also, let $D'$ and $S_A'$ be the images of points $D$ and $S_A$ under the inversion.
+
+ Let's investigate the properties of the inverted points.
+ Since $DA_1$ is tangent to the circle, $D'$ is the foot of the perpendicular from $A_1$ to $ID$. $A'$ is the midpoint of $B_1C_1$. Finally, since $SA_1$ is tangent to the circle, $S_A'$ is the foot of the perpendicular from $A_1$ to $IS_A$.
+ By the conclusion of Step 3, $A_1S_A'$ is parallel to $AI$.
+ By the observation from step 2, the inversion of the circumcircle of $ADT_A$ is the circumcircle of triangle $A'S_A'D'$. Similarly, the circumcircles of $B'S_B'E'$ and $C'S_C'F'$ are our desired circles. Let's prove that the three circumcircles pass through two common points.
+
+ <Step 5> The circumcircles of triangles $A'S_A'D', B'S_B'E'$, and $C'S_C'F'$ pass through two common points
+
+ Now, let's consider the figure with respect to triangle $A_1B_1C_1$.
+
+ In triangle $A_1B_1C_1$, point $I$ is the circumcenter. Let $H_1$ be the foot of the perpendicular from $A_1$ to $B_1C_1$.
+ Then, points $A'$, $S_A'$, and $D'$ are constructed as follows:
+ \begin{itemize}
+  \item Point $A'$ is the midpoint of $B_1C_1$.
+  \item Point $D'$ is the intersection of the line parallel to $B_1C_1$ passing through $A_1$ and the perpendicular bisector of $B_1C_1$.
+  \item Point $S_A'$ is the foot of the perpendicular from $I$ to $AH_1$.
+ \end{itemize}
+ Through this construction, we can find that the circumcenter $O_A$ of triangle $A'S_A'D'$ lies on the perpendicular bisector of $A'D'$, which is the line $B'C'$.
+ Now, let's consider the point $O_A'$ which is the reflection of $O_A$ with respect to the midpoint of $B'C'$.
+
+ <Step 6> $O_A'$ is the circumcenter of triangle $A_1IH_1$
+
+ Since $A'$, $B'$, $C'$, and $H_1$ lie on the nine-point circle of triangle $ABC$, these four points are concyclic. Therefore, quadrilateral $A'H_1 B'C'$ is an isosceles trapezoid, and points $A'$ and $H_1$ are symmetric with respect to the perpendicular bisector of line $B_1 C_1$.
+ Furthermore, $A_1$ and $D'$ are symmetric with respect to the perpendicular bisector of line $B'C'$.
+ Therefore, triangle $AIH_1$ is the reflection of triangle $A'S_A'D'$ across the perpendicular bisector of line $B'C'$, and the circumcenters $O_A$ and $O_A'$ are also symmetric with respect to each other.
+
+ <Step 7> $O_A, O_B$, and $O_C$ are collinear
+
+ Now, let's define $O_B, O_C, O_B'$, and $O_C'$ similarly, and show that $O_A, O_B$, and $O_C$ are collinear.
+ First, let's show that $O_A'$, $O_B'$, and $O_C'$ are collinear. It is sufficient to prove that the circumcircles of triangles $AIH_1$, $BIH_B$, and $C_1IH_C$ have a common radical axis.
+ On the other hand, the circumcenter $I$ of $ABC$ and the orthocenter $A_1H_A \cap B_1H_B \cap C_1H_C$ have the same power with respect to these three circumcircles. Therefore, these three circles have a common radical axis. Hence, the centers of these three circles, $O_A'$, $O_B'$, and $O_C'$, are collinear.
+ Now, by Menelaus' theorem, we have
+ \[\frac{C'O_A' \cdot B'O_C' \cdot A'O_B'}{O_A'B' \cdot O_C'A' \cdot O_B'C'} = 1\]
+ \[\frac{C'O_A \cdot B'O_C \cdot A'O_B}{O_AB' \cdot O_CA' \cdot O_BC'} = 1\]
+ Therefore, $O_A, O_B$, and $O_C$ are also collinear.
+
+ <Step 8> Circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ have two common points
+
+ Now, the circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ are inverted into circles. The centers of these three circles are collinear, as proven earlier. Therefore, these three circles either have a common radical axis or their radical axes are parallel. This property remains true before the inversion.
+ However, in Step 1, we found point $T$ that has the same power with respect to these three circles. Therefore, circles $\Gamma_A, \Gamma_B$, and $\Gamma_C$ have a common radical axis.
+ Furthermore, since point $T$ lies inside all three circles, this common radical axis intersects each circle at two distinct points. Therefore, the three circles have two common points.","(Partial)
+ 1. Showed that $AT_a$, $BT_b, CT_c$ are concurrent (there are many possible solutions).
+(Almost)
+ 1. Verification contains minor mistakes only.",Geometry,IMO-hard, ,Novel Problem
+PB-Advanced-010,"Let $O$ and $G$ be the circumcenter and centroid of a non-isosceles triangle $ABC$, respectively. Let $H$ be the foot of the perpendicular from $A$ to $BC$, and let $M$ be the midpoint of $BC$. For a point $X$ on the line $OG$, let the line $BX$ intersect $AC$ at $P$, and let the line $CX$ intersect $AB$ at $Q$. Let $H_1$ be the foot of the perpendicular from $P$ to the line $AB$, and let $K$ be the reflection of $A$ about $H_1$. Let $T$ be the intersection of the circumcircle of triangle $KPQ$ and the circumcircle of triangle $PHM$. Prove that as $X$ moves along the line $OG$, $T$ moves along a fixed circle.","The most difficult part of this problem is to observe that $(B, T, P, C)$ are concyclic. If this holds, let $Y$ be the intersection of $TP$ and $BC$. Then $YH \cdot YM = YT \cdot YP = YB \cdot YC$,
+ which means that $Y$ is the point such that $(B, H, C, Y)$ is a harmonic division. This is a fixed point. Thus, $T$ lies on the inversion of $AC$ with respect to the circle centered at $Y$ with radius $\sqrt{YB \cdot YC}$. This is a fixed circle.
+
+ \textbf{Claim:} $(B, T, P, C)$ are concyclic. This means that the circumcircles of $\triangle BPC$, $\triangle PHM$, and $\triangle KPQ$ are coaxial. We will use the following well-known Lemma: For two circles, the locus of points where the ratio of the powers with respect to the two circles is constant is a circle coaxial with the two circles.
+ Now, using the Lemma, we see that it suffices to show that: The ratio of the powers of $B$ and $C$ with respect to the circumcircles of $\triangle PHM$ and $\triangle KPQ$ are the same.
+
+ 1) The ratio of powers of $B$ and $C$ with respect to the circumcircle of $\triangle PHM$ is $\frac{BH \cdot BM}{CH \cdot CM} = \frac{BH}{CH}$.
+
+ 2) Let's compute the ratio of powers of $B$ and $C$ with respect to the circumcircle of $\triangle KPQ$. Let $H_2$ be the foot of the perpendicular from $Q$ to $AC$, and let $L$ be the reflection of $A$ across $H_2$. Since $\angle QKP = \angle QLP = 180^\circ - \angle A$, $(K, L, P, Q)$ are concyclic. The power of $B$ is $BK \cdot BQ$, and the power of $C$ is $CL \cdot CP$. We want to show that $\frac{CL \cdot CP}{BK \cdot BQ} = \frac{CH}{BH}$.
+
+ Let $D, E$ be the intersection of the Euler line of $\triangle ABC$ with $AB, AC$ respectively. Let $R$ be the intersection of $AX$ and $BC$.
+ By Ceva's theorem, $\frac{CP}{BQ} = \frac{AP}{AQ} \times \frac{CR}{BR}$. $BK = BA - KA = BA - 2AP \cos A$, $CL = CA - LA = CA - 2AQ \cos A$.
+ Thus $\frac{CL \cdot CP}{BK \cdot BQ} = \frac{CA - 2AQ \cos A}{BA - 2AP \cos A} \times \frac{AP}{AQ} \times \frac{CR}{BR} = \frac{\frac{CA}{AQ} - 2 \cos A}{\frac{BA}{AP} - 2 \cos A} \times \frac{CR}{BR}$.
+
+ Let $\frac{XE}{DX} = \lambda$.
+ $\frac{CR}{BR} = \frac{AC \sin \angle CAR}{AB \sin \angle BAR} = \frac{AC}{AB} \cdot \frac{AD}{AE} \cdot \frac{XE}{DX} = \frac{AC \cdot AD}{AB \cdot AE} \lambda$.
+ By Menelaus' theorem on $\triangle ADE$ and line $CXQ$,
+ $\frac{AQ}{QD} \cdot \frac{CE}{AC} \cdot \frac{DX}{EX} = 1$. Thus, $\frac{AQ}{QD} = \frac{AC}{CE} \lambda$, so $AQ = \frac{1}{1 + \frac{AC}{CE} \lambda} AD = \frac{AD}{1+\lambda \frac{AC}{CE}}.$
+ Similarly, $AP = \frac{1}{1 + \frac{1}{\lambda} \frac{AB}{BD}} AE$.
+ Thus $\frac{CL \cdot CP}{BK \cdot BQ} = \frac{\frac{CA}{AQ} - 2 \cos A}{\frac{BA}{AP} - 2 \cos A} \times \frac{CR}{BR}$ has the form $\frac{(\text{linear in } \lambda)}{(\text{linear in } \lambda)}$. That is, if it is $\frac{CH}{BH}$ for two values of $\lambda$, then it is $\frac{CH}{BH}$ for all $\lambda$.
+
+ Case 1) $X = H$.
+ In this case, $P, Q$ are the feet of the altitudes from $B, C$ respectively. Thus $KL \parallel BC$. Thus $\frac{CL \cdot CP}{BK \cdot BQ} = \frac{CH \cdot CB}{BH \cdot BC} = \frac{CH}{BH}$.
+
+ Case 2) $X = G$.
+ In this case, $P, Q$ are the midpoints of $AC, AB$, and $K, L$ are the feet of altitudes from $C, B$ respectively. Thus $\frac{CL \cdot CP}{BK \cdot BQ} = \frac{CH \cdot \frac{CB}{2}}{BH \cdot \frac{BC}{2}} = \frac{CH}{BH}$.
+ Since $H \neq G$ due to scalene condition, we have two different values of $\lambda$, completing the proof.","(Partial)
+ 1. Proved that $B, T, P, C$ lie on a circle.
+ 2. Observed that it suffices to show that the ratio of powers of $B$ and $C$ respect to the circumcircles of $\triangle PHM$ and $\triangle KPQ$ are the same.
+(Almost)
+ 1. In addition to items 1 and 2 of (Partial), observed that it is enough to prove $2$ of (Partial) only for two different $X$.
+ 2. Verification contains minor mistakes only.",Geometry,IMO-medium, ,Novel Problem
+PB-Advanced-012,"Let $p$ be a prime number and $a, b$ be positive integers such that
+
+ \[
+ p^{n}=a^{4}+b^{4}
+ \]
+
+ for some integer $n \geq 2$. Prove that $n \geq 5$.","First, let's summarize the facts that are frequently used in Diophantine equations. We will omit the proofs of well-known facts. The following lemma characterizes Pythagorean triples and is used repeatedly.
+
+ <Lemma 1> If $a, b, c$ are positive integers with $ab \neq 0$ satisfying $a^{2}+b^{2}=c^{2}$, then there exist positive integers $m \neq n$ and $k$ such that
+
+ \[
+ (a, b, c)=k\left(2 m n, m^{2}-n^{2}, m^{2}+n^{2}\right) \text { or } k\left(m^{2}-n^{2}, 2 m n, m^{2}+n^{2}\right).
+ \]
+
+ In particular, if $a, b$ are relatively prime, then $k=1$ and $m$ and $n$ have different parity, and one of $a, b$ is odd and the other is even. The odd one is expressed as $m^{2}-n^{2}$ and the even one is expressed as $2mn$. Also, in this case, $c$ is always odd.
+ <Proof of Lemma 1> Omitted. \qed
+ <Lemma 2> If $p$ is a prime number or 1, and positive integers $x$ and relatively prime positive integers $a, b$ satisfy
+
+ \[
+ p a b=x^{2},
+ \]
+
+ then there exist positive integers $u, v$ such that $(a, b, x)=\left(p u^{2}, v^{2}, p u v\right)$ or $\left(u^{2}, p v^{2}, p u v\right)$.
+ <Proof of Lemma 2> Omitted. \qed
+
+ <Lemma 3> If $a^{2}+b^{2}$ is a multiple of 4 for integers $a, b$, then both $a$ and $b$ are even.
+
+ <Proof of Lemma 3> $a$ and $b$ must have the same parity, but the square of an odd number has a remainder of 1 when divided by 4, so if $a, b$ have the same parity as odd numbers, then $a^{2}+b^{2}$ has a remainder of 2 when divided by 4, so it cannot be a multiple of 4. \qed
+
+ Now, let's proceed with the proof of the main problem using these facts.
+ <Step 1> There are no positive integers $x, y, z$ satisfying $x^{4}+y^{4}=z^{2}$. Therefore, $n$ is odd.
+
+ <Step 1.1> Using proof by contradiction, assume that there exists a positive integer solution $x, y, z$. Among these solutions, choose the solution $(x, y, z)$ with the smallest $z$. If there is a prime number $q$ that divides two of $x, y, z$, then it must also divide the remaining number, and in this case, $\left(\frac{x}{q}, \frac{y}{q}, \frac{z}{q^{2}}\right)$ becomes a solution, contradicting the minimality of $z$. Therefore, this solution is pairwise relatively prime.
+
+ <Step 1.2> Since $\left(x^{2}, y^{2}, z\right)$ is a Pythagorean triple, by <Lemma 1>, there exist relatively prime positive integers $u, v$ with different parity such that
+
+
+ \begin{equation*}
+ x^{2}=u^{2}-v^{2}, y^{2}=2 u v, z=u^{2}+v^{2} \tag{1.1}
+ \end{equation*}
+
+
+ We can assume that $u > v$ without loss of generality. Since $y^{2}=2 u v$ and $u, v$ are relatively prime, by <Lemma 2>, there exist positive integers $s, t$ such that $u=2 s^{2}, v=t^{2}$ or $u=s^{2}, v=2 t^{2}$.
+
+ (Case 1) $u=2 s^{2}, v=t^{2}$
+
+ $x^{2}+t^{4}=4 s^{4}$. By <Lemma 3>, both $x$ and $t$ must be even, but from $x^{2}=u^{2}-v^{2}$, $x$ is odd, which is a contradiction.
+
+ (Case 2) $u=s^{2}, v=2 t^{2}$
+
+ $x^{2}+4 t^{4}=s^{4}$ and since $t|v, v| y^{2}$,
+
+ \[
+ \operatorname{gcd}(x, t)|\operatorname{gcd}(x, v)| \operatorname{gcd}\left(x, y^{2}\right)=1.
+ \]
+
+ Therefore, $x$ and $t^{2}$ are also relatively prime, and by <Lemma 1>, there exist relatively prime positive integers $q, r$ with different parity (since $x$ is odd by (1.1)) such that
+
+ \[
+ x=q^{2}-r^{2}, 2 t^{2}=2 q r, s^{2}=q^{2}+r^{2}.
+ \]
+
+ Since $t^{2}=q r$, by <Lemma 2>, there exist positive integers $x', y'$ such that $q=x^{\prime 2}, r=y^{\prime 2}$, and thus by the above equation, $x^{\prime 4}+y^{\prime 4}=s^{2}$. Since
+
+ \[
+ s=\sqrt{u} \leq u<u^{2}+v^{2}=z,
+ \]
+
+ this contradicts the minimality of $(x, y, z)$. Therefore, the proof is complete.
+
+ <Step 2> If $p^{3}=a^{4}+b^{4}$, then there exist positive integers $x, y, z$ such that $x^{2}+3 y^{4}=z^{4}$.
+
+ <Step 2.1> If $p \mid a$, then clearly $p \mid b$ must also hold, and vice versa. Therefore, $a, b$ are either both multiples of $p$ or not. However, if the former is the case, the right-hand side becomes a multiple of $p^{4}$, which is a contradiction, so $p$ is relatively prime to both $a$ and $b$.
+
+ <Step 2.2> Therefore, $p$ is a divisor of the sum of squares, and since $(p, a)=(p, b)=1$, $p$ is a prime number of the form $4 k+1$, so it can be expressed in the form $p=c^{2}+d^{2}$. By Jacobi's theorem, there are only two ways (considering order) to express $p^{3}$ as the sum of perfect squares:
+
+ \[
+ (p c)^{2}+(p d)^{2} \text { and } \left(c\left(c^{2}-3 d^{2}\right)\right)^{2}+\left(d\left(3 c^{2}-d^{2}\right)\right)^{2}.
+ \]
+
+ By (1), the first case cannot be expressed as $a^{4}+b^{4}$, so
+
+ \[
+ a^{2}=\left|c\left(c^{2}-3 d^{2}\right)\right|, \quad b^{2}=\left|d\left(3 c^{2}-d^{2}\right)\right|
+ \]
+
+ (or vice versa, but we can ignore this case due to symmetry) must hold. Letting $C=|c|, D=|d|$, we have
+
+
+ \begin{equation*}
+ a^{2} b^{2}=C D \times\left|C^{2}-3 D^{2}\right| \times\left|3 C^{2}-D^{2}\right| \tag{1.2}
+ \end{equation*}
+
+
+ and $\operatorname{gcd}(C, D)=1$. Now, we divide into cases depending on whether $C D$ is a multiple of 3.
+
+ (Case 1) If $3 \mid C D$
+
+ Without loss of generality, assume $3 \mid C$. Then, from
+
+ \[
+ \left(\frac{a b}{3}\right)^{2}=\frac{C}{3} \cdot D \cdot\left|3\left(\frac{C}{3}\right)^{2}-D^{2}\right| \cdot\left|3 C^{2}-D^{2}\right|,
+ \]
+
+ since the four terms are pairwise relatively prime, there exist positive integers $e, f, g, h$ such that
+
+ \[
+ C=3 e^{2}, \quad D=f^{2},\left|3 e^{4}-f^{4}\right|=g^{2},\left|27 e^{4}-f^{4}\right|=h^{2}.
+ \]
+
+ Then, by $\bmod 3$, we have $g^{2}+3 e^{4}=f^{4}$.
+
+ (Case 2) If $3 \nmid CD$
+
+ From (1.2), since the four terms are pairwise relatively prime, there exist positive integers $e, f, g, h$ such that
+
+ \[
+ C=e^{2}, \quad D=f^{2},\left|e^{4}-3 f^{4}\right|=g^{2},\left|3 e^{4}-f^{4}\right|=h^{2}.
+ \]
+
+ Similarly, by $\bmod 3$, we have $e^{4}-3 f^{4}=g^{2}$.
+
+ Therefore, in both cases, there exists a positive integer solution to $x^{2}+3 y^{4}=z^{4}$.
+
+ <Step 3> There are no positive integers $x, y, z$ satisfying $x^{2}+3 y^{4}=z^{4}$.
+
+ Using proof by contradiction, assume that there exists a positive integer solution $x, y, z$. Among these solutions, choose the solution $(x, y, z)$ with the smallest $z$. If there is a prime number $q$ that divides two of $x, y, z$, then it must also divide the remaining number, and in this case, $\left(\frac{x}{q^{2}}, \frac{y}{q}, \frac{z}{q}\right)$ becomes a solution, contradicting the minimality of $z$. Therefore, this solution is pairwise relatively prime.
+
+ Now, rewriting the equation as
+
+
+ \begin{equation*}
+ 3 y^{4}=\left(z^{2}-x\right)\left(z^{2}+x\right) \tag{1.3}
+ \end{equation*}
+
+
+ we can divide into two cases since $\operatorname{gcd}\left(z^{2}-x, z^{2}+x\right)=1$ or 2.
+
+ (Case 1) If $x$ and $z$ have the same parity
+
+ By <Lemma 2>, there exist relatively prime positive integers $u, v$ such that
+
+ \[
+ z^{2}-x=2 u^{2}, z^{2}+x=6 v^{2}, y^{2}=2 u v \quad \text { or } \quad z^{2}+x=2 u^{2}, z^{2}-x=6 v^{2}, y^{2}=2 u v.
+ \]
+
+ In both cases, we have
+
+
+ \begin{equation*}
+ z^{2}=u^{2}+3 v^{2}, y^{2}=2 u v. \tag{1.4}
+ \end{equation*}
+
+
+ Since $y$ is even, one of $u, v$ must be even.
+
+ <Step 3.1> If $u$ is even, then $v$ is odd, and then $z^{2}=u^{2}+3 v^{2} \equiv 3(\bmod 4)$, which is a contradiction.
+
+ <Step 3.2> If $v$ is even, then by <Lemma 2>, there exist positive integers $s, t$ such that
+
+ \[
+ u=s^{2}, v=2 t^{2},
+ \]
+
+ and substituting this back into (1.4) gives $s^{4}+12 t^{4}=z^{2}$. Since both $s$ and $z$ are odd, this equation can be written as
+
+ \[
+ \frac{z+s^{2}}{2} \cdot \frac{z-s^{2}}{2}=3 t^{4},
+ \]
+
+ and since $\operatorname{gcd}\left(\frac{z+s^{2}}{2}, \frac{z-s^{2}}{2}\right)=1$, by <Lemma 2>, there exist relatively prime positive integers $q, r$ such that
+
+ \[
+ \frac{z+s^{2}}{2}=q^{4}, \frac{z-s^{2}}{2}=3 r^{4} \quad \text { or } \quad \frac{z+s^{2}}{2}=3 r^{4}, \frac{z-s^{2}}{2}=q^{4}.
+ \]
+
+ In the second case, we have $s^{2}=3 r^{4}-q^{4}$, but since $q$ and $s$ cannot both be multiples of 3 (in this case, $r$ would also be a multiple of 3, leading to a contradiction), $s^{2}+q^{4}$ cannot be a multiple of 3, which is a contradiction. In the remaining case, we have $s^{2}=q^{4}-3 r^{4}$, but since $q \leq q^{4} = \frac{z+s^2}{2} < z$, this contradicts the minimality of $z$.
+
+ (Case 2) If $x$ and $z$ have different parity
+
+ In this case, by (1.3) and <Lemma 2>, there exist relatively prime positive integers $u, v$ such that
+
+ \[
+ z^{2}+x=u^{4}, z^{2}-x=3 v^{4}, y^{2}=u v \quad \text { or } \quad z^{2}-x=3 v^{4}, z^{2}+x=u^{4}, y^{2}=u v.
+ \]
+
+ In both cases, we have $2 z^{2}=u^{4}+3 v^{4}$, but since $z$ and $u$ cannot both be multiples of 3, this leads to a contradiction modulo 3.
+
+ Therefore, by <Step 1>, $n \neq 2,4$, and by <Step 2>, $n \neq 3$, so the proof is complete.","(Partial)
+ 1. Observed and verified that $x^2=y^4+z^4$ has no nontrivial solution
+ 2. Transformed the equation $p^3=a^4+b^4$ into $p=c^2+d^2, a^2=c(c^2-3d^2), b^2=d(3c^2-d^2)$
+(Almost)
+ 1. Transformed the given equation to $x^2+3y^4=z^4$ or its equivalent form, but failed to prove that it has no nontrivial solution",Number theory,IMO-hard, ,Novel Problem
+PB-Advanced-013,"For an integer $n \geq 2$, let $a_{1} \leq a_{2} \leq \cdots \leq a_{n}$ be positive real numbers satisfying $a_{1} a_{2} \cdots a_{n}=1$. For each $k=1,2, \cdots, n$, define $b_{k}=2^{k}\left(1+a_{k}^{2^{k}}\right)$. Prove that the following inequality holds:
+
+ \[
+ \frac{1}{2}-\frac{1}{2^{n+1}} \leq \frac{1}{b_{1}}+\frac{1}{b_{2}}+\cdots+\frac{1}{b_{n}}
+ \]","The following Lemma is often used in problems involving multiple variables or sequences.
+
+ <Lemma> For positive real numbers $x, y$ satisfying $xy \geq 1$, the following inequality holds:
+
+ \[
+ \frac{1}{1+x}+\frac{1}{1+y} \geq \frac{2}{1+\sqrt{x y}}
+ \]
+
+ <Proof of Lemma> The proof is a simple calculation. Multiplying both sides by $(1+\sqrt{x y})(1+x)(1+y)$, the given inequality simplifies to $(\sqrt{x y}-1)(\sqrt{x}-\sqrt{y})^{2} \geq 0$, which holds trivially under the condition $x y \geq 1$. Therefore, the inequality is proven.\qed
+
+ Now, let's prove the main problem. We will prove by induction that the following inequality holds for each $k=n, n-1, \cdots, 1$:
+
+ \begin{equation*}
+ \frac{1}{2^{n+1}}+\frac{1}{b_{n}}+\frac{1}{b_{n-1}}+\cdots+\frac{1}{b_{k}} \geq \frac{1}{2^{k-1}} \frac{1}{1+\left(a_{n} a_{n-1} \cdots a_{k}\right)^{2^{k-1}}} \tag{1.1}
+ \end{equation*}
+
+ In particular, if this inequality holds for $k=1$, then the inequality in the problem is proven due to the condition $a_{1} a_{2} \cdots a_{n}=1$.
+ <Step 1> First, for $k=n$, since $a_{n} \geq 1$, we obtain the following by <Lemma>:
+
+ \[
+ \frac{1}{2^{n+1}}+\frac{1}{b_{n}}=\frac{1}{2^{n}}\left(\frac{1}{1+1}+\frac{1}{1+a_{n}^{2^{n}}}\right) \geq \frac{1}{2^{n-1}} \frac{1}{1+a_{n}^{2^{n-1}}}
+ \]
+
+ Therefore, (1.1) holds.
+
+ <Step 2> Next, let's prove that if (1.1) holds for $k=m$, then it also holds for $k=m-1$ (where $2 \leq m \leq n$).
+
+ <Step 2.1> First, by the induction hypothesis, we obtain the following inequality:
+
+ \[
+ \frac{1}{2^{n+1}}+\frac{1}{b_{n}}+\frac{1}{b_{n-1}}+\cdots+\frac{1}{b_{m}}+\frac{1}{b_{m-1}} \geq \frac{1}{2^{m-1}}\left[\frac{1}{1+\left(a_{n} a_{n-1} \cdots a_{m}\right)^{2^{m-1}}}+\frac{1}{1+a_{m-1}^{2_{m-1}^{m}}}\right]
+ \]
+
+ <Step 2.2> By the condition of the problem,
+
+ \[
+ \left(a_{n} a_{n-1} \cdots a_{m}\right)^{2^{m-1}} \cdot a_{m-1}^{2^{m-1}} \geq 1
+ \]
+
+ Therefore, by <Lemma>,
+
+ \[
+ \frac{1}{2^{m-1}}\left[\frac{1}{1+\left(a_{n} a_{n-1} \cdots a_{m}\right)^{2^{m-1}}}+\frac{1}{1+a_{m-1}^{2^{m-1}}}\right] \geq \frac{1}{2^{m-2}} \frac{1}{1+\left(a_{n} a_{n-1} \cdots a_{m} a_{m-1}\right)^{2^{m-2}}}
+ \]
+
+ This confirms that inequality (1.1) also holds for $k=m-1$.
+
+ In conclusion, by mathematical induction, (1.1) holds for $k=1$, completing the proof.","(Partial)
+ 1. Tried to apply induction in an appropriate direction.
+ 2. Found any localization inequality, e.g., the one equivalent to the Lemma of solution.
+ (Almost)
+ 1. Verification contains minor mistakes only.",Algebra,IMO-easy, ,Novel Problem
+PB-Advanced-022,"Given a triangle $ABC$ with $AB<AC<BC$, let $I$ be the incenter
+ of triangle $ABC$, and let $M$ and $N$ be the midpoints of sides
+ $CA$ and $AB$, respectively. Let $K$ be the midpoint of the arc
+ $BC$ of the circumcircle of triangle $ABC$ which does not contain
+ $A$. Let $B'\neq B$ be the point where the line parallel to $AC$
+ and tangent to the incircle of triangle $ABC$ intersects side $BC$,
+ and similarly, let $C'\neq C$ be the point where the line parallel
+ to $AB$ and tangent to the incircle of triangle $ABC$ intersects
+ side $BC$. Find the value of $\angle NIM+\angle B'KC'$ in terms
+ of degree.","Let $IB'$ intersect $CK$ at $Q$.
+
+
+ \textbf{Claim. }Triangle $CB'Q$ is similar to $\triangle AIB$ (and
+ $Q$ lies on circle $BIC$).
+
+
+ \emph{Proof.} Since the tangent at $B'$ to the incircle, distinct
+ from $BC$, is parallel to $AC$, and $B'I$ bisects the two tangents
+ from $B'$,
+ \[
+ \angle CB'I=\frac{1}{2}\left(180^{\circ}-\angle ACB\right)=90^{\circ}-\frac{1}{2}\angle ACB.
+ \]
+ Using this, we get
+ \[
+ \angle CQB'=\angle CB'I-\angle BCK=90^{\circ}-\frac{1}{2}\angle ACB-\angle BAK=90^{\circ}-\frac{1}{2}(\angle ACB+\angle BAC)=\frac{1}{2}\angle CBA
+ \]
+ Which is enough to show $Q$ lies on circle $BIC$. Combining this
+ with $\angle B'CQ=\angle BCK=$ $\angle BAI$ gives the similarity.
+
+ Note that $K$ is the centre of circle $BIC$ so $K$ is the midpoint
+ of $CQ$. Since $N$ is the midpoint of $AB$, $K$ and $N$ are similar
+ points in the two triangles in the Claim so
+ \[
+ \angle KB'C'=\angle KB'C=\angle AIN.
+ \]
+
+ Similarly $\angle B'C'K=\angle MIA$ so
+ \[
+ \angle MIN+\angle C'KB'=\angle MIA+\angle AIN+\angle C'KB'=\angle B'C'K+\angle KB'C'+\angle C'KB'=180^{\circ}.
+ \]","(Partial)
+ 1. Constructed the reflection of $A$ over $I$, or any auxiliary point that helps angle computation regarding the midpoints.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Geometry,IMO-easy,180,(Modified) IMO 2024 P4
+PB-Advanced-026,"Let $n$ and $k$ be positive integers with $k<n$. Let $P(x)$ be
+ a polynomial of degree $n$ with real coefficients, nonzero constant
+ term, and no repeated roots. Suppose that for any real numbers $a_{0},a_{1},\dots,a_{k}$
+ such that the polynomial $a_{k}x^{k}+\dots+a_{1}x+a_{0}$ divides
+ $P(x)$, the product $a_{0}a_{1}\dots a_{k}$ is zero. Prove that
+ $P(x)$ has a non-real root.","Let $n>k\geq1$ be integers. Let $P(x)\in\mathbb{R}[x]$ be a polynomial
+ of degree $n$ with no repeated roots and $P(0)\neq0$. Suppose that
+ for any real numbers $a_{0},\ldots,a_{k}$ such that the polynomial
+ $a_{k}x^{k}+\cdots+a_{1}x+a_{0}$ divides $P(x)$, the product $a_{0}a_{1}\ldots a_{k}$
+ is zero. Prove that $P(x)$ has a non-real root.
+
+
+ By considering any $k+1$ of the roots of $P$, we may as well assume
+ WLOG that $n=k+1$. Suppose that $P(x)=\left(x+r_{1}\right)\ldots\left(x+r_{n}\right)\in\mathbb{R}[x]$
+ has $P(0)\neq0$. Then the problem hypothesis is that each of the
+ $n$ polynomials (of degree $n-1$ ) given by
+
+ \[
+ \begin{aligned}P_{1}(x) & =\left(x+r_{2}\right)\left(x+r_{3}\right)\left(x+r_{4}\right)\ldots\left(x+r_{n}\right)
+
+ P_{2}(x) & =\left(x+r_{1}\right)\left(x+r_{3}\right)\left(x+r_{4}\right)\ldots\left(x+r_{n}\right)
+
+ P_{3}(x) & =\left(x+r_{1}\right)\left(x+r_{2}\right)\left(x+r_{4}\right)\ldots\left(x+r_{n}\right)
+
+  & \vdots
+
+ P_{n}(x) & =\left(x+r_{1}\right)\left(x+r_{2}\right)\left(x+r_{3}\right)\ldots\left(x+r_{n-1}\right)
+ \end{aligned}
+ \]
+
+ has at least one coefficient equal to zero. (Explicitly, $P_{i}(x)=\frac{P(x)}{x+r_{i}}$.)
+ We'll prove that at least one $r_{i}$ is not real.
+
+
+ Obviously the leading and constant coefficients of each $P_{i}$ are
+ nonzero, and there are $n-2$ other coefficients to choose between.
+ So by pigeonhole principle, we may assume, say, that $P_{1}$ and
+ $P_{2}$ share the position of a zero coefficient, say the $x^{k}$
+ one, for some $1\leq k<n-1$.
+
+
+ \textbf{Claim 1. }If $P_{1}$ and $P_{2}$ both have $x^{k}$ coefficient
+ equal to zero, then the polynomial
+
+ \[
+ Q(x)=\left(x+r_{3}\right)\left(x+r_{4}\right)\ldots\left(x+r_{n}\right)
+ \]
+
+ has two consecutive zero coefficients.
+
+
+ \emph{Proof.} Suppose that
+
+ \[
+ Q(x)=x^{n-2}+b_{n-3}x^{n-3}+\cdots+b_{0}.
+ \]
+
+ (And let $b_{n-2}=1$. ) Then the fact that the $x^{k}$ coefficient
+ of $P_{1}$ and $P_{2}$ are both zero means
+
+ \[
+ r_{1}b_{k}+b_{k-1}=r_{2}b_{k}+b_{k-1}=0
+ \]
+
+ and hence that $b_{k}=b_{k-1}=0$ (since the $r_{i}$ are distinct).
+
+
+
+  To solve the problem, it suffices to prove:
+
+
+ \textbf{Claim 2.} If $F(x)\in\mathbb{R}[x]$ is a polynomial with
+ two consecutive zero coefficients, it cannot have all distinct real
+ roots.
+
+
+ \emph{Proof. }Say $x^{t}$ and $x^{t+1}$ coefficients of $F$ are
+ both zero. Assume for contradiction all the roots of $F$ are real
+ and distinct. Then by Rolle's theorem, every higher-order derivative
+ of $F$ should have this property too. However, the $t$th order derivative
+ of $F$ has a double root of $0$, contradiction.","(Partial)
+ 1. (WLOG assumed $n=k+1$ and) proved that two different divisors of $P$ share the position of a zero coefficient.
+ 2. Found a polynomial with only distinct real roots and has two consecutive zero coefficients.
+(Almost)
+ 1. Solution is almost complete, but made minor mistakes which are not negligible.",Algebra,IMO-medium, ,USAMO 2025

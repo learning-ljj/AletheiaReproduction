@@ -1,0 +1,5 @@
+problem_id,category,status,iteration_count,error,run_dir
+PB-Basic-011,Combinatorics,FAILED,3,,
+PB-Basic-002,Algebra,SUCCESS,1,,
+PB-Basic-012,Combinatorics,SUCCESS,3,,
+PB-Advanced-003,Geometry,FAILED,3,,

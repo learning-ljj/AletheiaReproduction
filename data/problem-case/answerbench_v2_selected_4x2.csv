@@ -1,0 +1,29 @@
+Problem ID,Problem,Short Answer,Category,Subcategory,Source
+imo-bench-algebra-002,"Given a positive integer $a$, let $\pi:\{1,2,\ldots , a\}\to\{1,2,\ldots , a\}$ be a bijection. Find the minimum possible value of $\sum_{i=1}^{a}{\left\lfloor \frac{\pi(i)}{i} \right\rfloor}$.
+",$\left\lfloor \log_{2}a\right\rfloor +1$.,Algebra,Inequality,IMO Shortlist 2021
+imo-bench-algebra-025,"Find all functions $A:\mathbb{R}\rightarrow\mathbb{R}$ such that $A(p)A(q)+A(-pq)=A(p+q)+2pq+1$ holds for all real numbers $p$ and $q$.
+","$A(x)=1-x, A(x)=1+2x, A(x)=1-x^{2}$",Algebra,Functional Equation,IMO Shortlist 2007
+imo-bench-combinatorics-006,"In the vibrant nation of South Korea, there are $57$ bustling cities interconnected by a network of two-way airways. Each pair of cities is linked by exactly one direct airway. Recognizing the potential for growth and competition, the government has decided to license several airlines to operate within this intricate air transportation system. To ensure fair competition and accessibility for all citizens, the government has established specific licensing conditions:
+
+i) Each airway must be exclusively licensed to one airline.
+ii) Regardless of the chosen airline, it must be possible to travel from any city to any other city using only the flights operated by that airline.
+
+With these conditions in mind, what is the maximum number of airlines that the government can license while still satisfying all the requirements?",28,Combinatorics,Graph Theory,Vietnam TST 2019
+imo-bench-combinatorics-006,"In the vibrant nation of South Korea, there are $57$ bustling cities interconnected by a network of two-way airways. Each pair of cities is linked by exactly one direct airway. Recognizing the potential for growth and competition, the government has decided to license several airlines to operate within this intricate air transportation system. To ensure fair competition and accessibility for all citizens, the government has established specific licensing conditions:
+
+i) Each airway must be exclusively licensed to one airline.
+ii) Regardless of the chosen airline, it must be possible to travel from any city to any other city using only the flights operated by that airline.
+
+With these conditions in mind, what is the maximum number of airlines that the government can license while still satisfying all the requirements?",28,Combinatorics,Graph Theory,Vietnam TST 2019
+imo-bench-geometry-001,"Let $h$ be the smallest height of a triangular pyramid, and let $d$ be the shortest distance between its opposite edges. Let $S$ be the set of values of $t$ such that the inequality $d > th$ is possible. Find the supremum of $S$.
+",$\frac{3}{2}$,Geometry,3d_geometry,Sharygin 2008
+imo-bench-geometry-065,"Let $Q$ be a point on the circumcircle of square $EFGH$ such that $QE \cdot QG = 56$ and $QF \cdot QH = 90.$ What is the area of square $EFGH?$
+",106,Geometry,computation,AIME 2023
+imo-bench-number_theory-001,"Find all positive integers $m > 1$ such that there exists a permutation $(a_1, a_2, \dots, a_n)$ of the all divisors of $m$ for which $a_1 + \dots + a_i$ is a perfect square for all $1 \leq i \leq n$.
+",3,Number theory,Perfect power,IMO Shortlist 2021
+imo-bench-number_theory-010,"Suppose $f$ is a polynomial with integer coefficients of odd degree $d \ge 3$. Assume that the following condition holds:
+
+(Condition) For any positive integer $n$, there exist distinct positive integers $a_1, \dots, a_n$ such that for any $1 \leq i, j \leq n$, $\frac{f(a_i)}{f(a_j)}$ is between $\frac{1}{2}$ and $2$ and is the $d$-th power of some rational number.
+
+Furthermore, for some prime $p$, we know that $f(1)=3^d p$ and $\frac{f(2)}{f'(2)}=\frac{5}{2d}$. Evaluate $f(3)$.
+",$7^d p$,Number theory,Polynomial,IMO Shortlist 2016

@@ -1,0 +1,125 @@
+Problem ID,Problem,Short Answer,Category,Subcategory,Source
+imo-bench-algebra-002,"Given a positive integer $a$, let $\pi:\{1,2,\ldots , a\}\to\{1,2,\ldots , a\}$ be a bijection. Find the minimum possible value of $\sum_{i=1}^{a}{\left\lfloor \frac{\pi(i)}{i} \right\rfloor}$.
+",$\left\lfloor \log_{2}a\right\rfloor +1$.,Algebra,Inequality,IMO Shortlist 2021
+imo-bench-algebra-025,"Find all functions $A:\mathbb{R}\rightarrow\mathbb{R}$ such that $A(p)A(q)+A(-pq)=A(p+q)+2pq+1$ holds for all real numbers $p$ and $q$.
+","$A(x)=1-x, A(x)=1+2x, A(x)=1-x^{2}$",Algebra,Functional Equation,IMO Shortlist 2007
+imo-bench-algebra-011,"Let $m\ge 3$ be an integer. An $m$-tuple of real numbers $(a_1,a_2,\ldots,a_m)$ is said to be Sparkling if for each permutation $b_1,b_2,\ldots ,b_m$ of these numbers we have $$b_1 b_2 +b_2 b_3 +\cdots+b_{m-1}b_{m}\geqslant-4$$. Find the largest constant $T=T(m)$ such that the inequality $$\sum \limits_{1 \le p< q \le m} c_p c_q \ge T$$ holds for all sparkling tuples $(c_1,c_2,\ldots,c_m)$.
+",$2-2m$,Algebra,Inequality,IMO Shortlist 2017
+imo-bench-algebra-003,"Find all functions $g:\mathbb{R}\rightarrow\mathbb{R}$ which is not a linear or constant function and satisfies
+
+\[
+4g\left(x^{2}y+y^{2}z+z^{2}x\right)-(g(y)-g(x))(g(z)-g(y))(g(x)-g(z))=4g\left(xy^{2}+yz^{2}+zx^{2}\right)
+\]
+
+for all real numbers $x,y,z$.
+","$g(x)=2x^{3}+c, g(x)=-2x^{3}+c$ ",Algebra,Functional Equation,IMO Shortlist 2021
+imo-bench-algebra-014,"Given a positive integer $a$, find the maximum possible value of
+$$ \sum_{1 \le m < n \le 2a} (n-m-a)p_mp_n $$
+for real numbers $p_1, \ldots, p_{2a}$ with absolute values not exceeding $2025$.
+",$2025^2 a(a-1)$ ,Algebra,Inequality,IMO Shortlist 2016
+imo-bench-algebra-001,"For a given positive integer $N$, Henry writes the quotient of $ab$ divided by $N+1$ on the board for each integer pair $(a,b)$ where $1\le a,b\le N$. Find all $N$ such that the sum of the $N^2$ numbers Henry wrote on the board is $\frac{N^3-N^2+2}{4}$.
+",3,Algebra,Operation,IMO Shortlist 2021
+imo-bench-algebra-014,"Given a positive integer $a$, find the maximum possible value of
+$$ \sum_{1 \le m < n \le 2a} (n-m-a)p_mp_n $$
+for real numbers $p_1, \ldots, p_{2a}$ with absolute values not exceeding $2025$.
+",$2025^2 a(a-1)$ ,Algebra,Inequality,IMO Shortlist 2016
+imo-bench-algebra-043,"A sequence $b_1, b_2, \ldots, b_k$ is said to 'increase steeply' if each term is positive, and for each $2 \le i \le k$, $b_i \ge b_{i-1} + \cdots + b_2 + b_1$. Find the maximum value of the constant $S$ such that for all $k$ and steeply increasing sequences $b_1, b_2, \ldots, b_k$,
+$$S\sum_{i=1}^k{\sqrt{x_i}}\le \sqrt{\sum_{i=1}^k{x_i}}$$
+holds.
+",$\sqrt{2}-1$,Algebra,Inequality,IMO Shortlist 1986
+imo-bench-algebra-087,"Find all positive integers $n$ for which there exist non-constant integer-coefficient polynomials $P(x)$ and $Q(x)$ such that $P(x)Q(x) = x^n - 729$.
+","$n=2k, n=3k$",Algebra,Polynomial,Bulgaria 1998
+imo-bench-algebra-004,"Let $u \ge 2$ be a given positive integer. Find the smallest real number $C$ such that for all real numbers $t$, $\frac{t^{2^u}+1}{2} \le (C(t-1)^2+t)^{2^{u-1}}$.
+",$2^{u-2}$,Algebra,Inequality,IMO Shortlist 2021
+imo-bench-combinatorics-006,"In the vibrant nation of South Korea, there are $57$ bustling cities interconnected by a network of two-way airways. Each pair of cities is linked by exactly one direct airway. Recognizing the potential for growth and competition, the government has decided to license several airlines to operate within this intricate air transportation system. To ensure fair competition and accessibility for all citizens, the government has established specific licensing conditions:
+
+i) Each airway must be exclusively licensed to one airline.
+ii) Regardless of the chosen airline, it must be possible to travel from any city to any other city using only the flights operated by that airline.
+
+With these conditions in mind, what is the maximum number of airlines that the government can license while still satisfying all the requirements?",28,Combinatorics,Graph Theory,Vietnam TST 2019
+imo-bench-combinatorics-006,"In the vibrant nation of South Korea, there are $57$ bustling cities interconnected by a network of two-way airways. Each pair of cities is linked by exactly one direct airway. Recognizing the potential for growth and competition, the government has decided to license several airlines to operate within this intricate air transportation system. To ensure fair competition and accessibility for all citizens, the government has established specific licensing conditions:
+
+i) Each airway must be exclusively licensed to one airline.
+ii) Regardless of the chosen airline, it must be possible to travel from any city to any other city using only the flights operated by that airline.
+
+With these conditions in mind, what is the maximum number of airlines that the government can license while still satisfying all the requirements?",28,Combinatorics,Graph Theory,Vietnam TST 2019
+imo-bench-combinatorics-003,"Consider a circular arrangement of 2n+1 identical coins, where n is a positive integer. Initially, all coins are facing heads up. A sequence of 2n+1 flips is performed in a clockwise manner: one coin is flipped, the next coin is skipped, the next coin is flipped, the next two coins are skipped, the next coin is flipped, the next three coins are skipped, and so on. This pattern continues until finally, 2n coins are skipped, and the next coin is flipped.  What is the total number of coins facing heads down after completing this procedure?",1,Combinatorics,Operations,Tournament of Towns 2019
+imo-bench-combinatorics-018,"Find the smallest positive integer $k$ such that, for any subset $A$ of $S=\{1,2,\ldots,2024\}$ with $|A|=k$, there exist three elements $x,y,z$ in $A$ such that $x=a+b$, $y=b+c$, $z=c+a$, where $a,b,c$ are in $S$ and are distinct integers. Additionally, there exists a set $B$ such that $B$ is a subset of $S$ and $|B|=10$.",1014,Combinatorics,Additive Combinatorics,China 2012
+imo-bench-combinatorics-007,"There are 345 students participating in the National Olympiad. The organizer needs to divide the students into $n$ classes so that each student is in one class. Each student knows exactly 9 other students. (If student A knows student B, then student B does not necessarily know student A.) Find the smallest $n$ such that it is always possible to arrange the classes so that no student knows another student in his or her class to avoid cheating.",19,Combinatorics,Graph Theory,USA TST 2001
+imo-bench-combinatorics-003,"Consider a circular arrangement of 2n+1 identical coins, where n is a positive integer. Initially, all coins are facing heads up. A sequence of 2n+1 flips is performed in a clockwise manner: one coin is flipped, the next coin is skipped, the next coin is flipped, the next two coins are skipped, the next coin is flipped, the next three coins are skipped, and so on. This pattern continues until finally, 2n coins are skipped, and the next coin is flipped.  What is the total number of coins facing heads down after completing this procedure?",1,Combinatorics,Operations,Tournament of Towns 2019
+imo-bench-combinatorics-002,"Let $S$ be the set of positive integer n such that
+i) 99 \leq n \leq 206
+ii) you can divide the numbers 1, 2, ..., 2n into n pairs, such that the differences between the two numbers in each pair are exactly 1, 2, 3, ..., n.
+
+Let $m, M$ be the smallest and the largest elements of $S$ respectively, find the value of $m + M$.",305,Combinatorics,Existence Combinatorics,Germany 2006
+imo-bench-combinatorics-002,"Let $S$ be the set of positive integer n such that
+i) 99 \leq n \leq 206
+ii) you can divide the numbers 1, 2, ..., 2n into n pairs, such that the differences between the two numbers in each pair are exactly 1, 2, 3, ..., n.
+
+Let $m, M$ be the smallest and the largest elements of $S$ respectively, find the value of $m + M$.",305,Combinatorics,Existence Combinatorics,Germany 2006
+imo-bench-combinatorics-002,"Let $S$ be the set of positive integer n such that
+i) 99 \leq n \leq 206
+ii) you can divide the numbers 1, 2, ..., 2n into n pairs, such that the differences between the two numbers in each pair are exactly 1, 2, 3, ..., n.
+
+Let $m, M$ be the smallest and the largest elements of $S$ respectively, find the value of $m + M$.",305,Combinatorics,Existence Combinatorics,Germany 2006
+imo-bench-combinatorics-002,"Let $S$ be the set of positive integer n such that
+i) 99 \leq n \leq 206
+ii) you can divide the numbers 1, 2, ..., 2n into n pairs, such that the differences between the two numbers in each pair are exactly 1, 2, 3, ..., n.
+
+Let $m, M$ be the smallest and the largest elements of $S$ respectively, find the value of $m + M$.",305,Combinatorics,Existence Combinatorics,Germany 2006
+imo-bench-geometry-001,"Let $h$ be the smallest height of a triangular pyramid, and let $d$ be the shortest distance between its opposite edges. Let $S$ be the set of values of $t$ such that the inequality $d > th$ is possible. Find the supremum of $S$.
+",$\frac{3}{2}$,Geometry,3d_geometry,Sharygin 2008
+imo-bench-geometry-065,"Let $Q$ be a point on the circumcircle of square $EFGH$ such that $QE \cdot QG = 56$ and $QF \cdot QH = 90.$ What is the area of square $EFGH?$
+",106,Geometry,computation,AIME 2023
+imo-bench-geometry-009,"A convex $m$-gon $Q$, where $m > 3$, is divided into identical triangles by diagonals that do not intersect within it. For which values of $m$ is it possible for $Q$ to be circumscribed?
+",4,Geometry,combinatorial_geometry,Sharygin 2011
+imo-bench-geometry-001,"Let $h$ be the smallest height of a triangular pyramid, and let $d$ be the shortest distance between its opposite edges. Let $S$ be the set of values of $t$ such that the inequality $d > th$ is possible. Find the supremum of $S$.
+",$\frac{3}{2}$,Geometry,3d_geometry,Sharygin 2008
+imo-bench-geometry-002,"Given right triangle $ XYZ$ with hypothenuse $ XZ$ and $ \angle X = 50^{\circ}$. Points $ P$ and $ Q$ on the side $ YZ$ are such that $ \angle PXZ = \angle QXY = 10^{\circ}$. Compute the ratio $2 \times YQ/ZP$.
+",1,Geometry,computation,Sharygin 2008
+imo-bench-geometry-001,"Let $h$ be the smallest height of a triangular pyramid, and let $d$ be the shortest distance between its opposite edges. Let $S$ be the set of values of $t$ such that the inequality $d > th$ is possible. Find the supremum of $S$.
+",$\frac{3}{2}$,Geometry,3d_geometry,Sharygin 2008
+imo-bench-geometry-026,"A line intersects a segment $PQ$ at point $R$. What is the maximum number of points $Y$ on this line such that one of the angles $\angle PYR$ and $\angle QYR$ is equal to half of the other?
+",4,Geometry,computation,Sharygin 2022
+imo-bench-geometry-091,"Triangle $PQR$ has incenter $J$. Let $S$ be the foot of the perpendicular from $P$ to side $QR$. Let $Y$ be a point such that segment $PY$ is a diameter of the circumcircle of triangle $PQR$. Given that $JS = 2$, $JP = 3$, and $JY = 4$, compute the inradius of triangle $PQR$.
+",$\frac{11}{12}$,Geometry,computation,HMMT 2023
+imo-bench-geometry-051,"Let $\overline{CD}$ be a chord of a circle $\Omega$, and let $R$ be a point on the chord $\overline{CD}$. Circle $\Omega_1$ passes through $C$ and $R$ and is internally tangent to $\Omega$. Circle $\Omega_2$ passes through $D$ and $R$ and is internally tangent to $\Omega$. Circles $\Omega_1$ and $\Omega_2$ intersect at points $R$ and $S$. Line $RS$ intersects $\Omega$ at $U$ and $V$. Assume that $CR=4$, $RD=6$, $UV=11$, and $RS^2 = \frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. Find $m+n$.
+",29,Geometry,computation,AIME 2019
+imo-bench-geometry-076,"Let $x$ be a real number with $\sqrt{2}<x<2$, and let $PQRS$ be a convex cyclic quadrilateral whose circumcentre $I$ lies in its interior. The quadrilateral's circumcircle $\gamma$ has radius $1$, and the longest and shortest sides of the quadrilateral have length $x$ and $\sqrt{4-x^2}$, respectively. Lines $L_P,L_Q,L_R,L_S$ are tangent to $\gamma$ at $P,Q,R,S$, respectively.
+
+Let lines $L_P$ and $L_Q$, $L_Q$ and $L_R$,$L_R$ and $L_S$,$L_S$ and $L_P$ intersect at $P',Q',R',S'$ respectively. Determine the minimum value of $\frac{S_{P'Q'R'S'}}{S_{PQRS}}$ in terms of $x$.
+",$\frac{4}{x\sqrt{4-x^2}}$,Geometry,extremal_geometry,China 2001
+imo-bench-number_theory-001,"Find all positive integers $m > 1$ such that there exists a permutation $(a_1, a_2, \dots, a_n)$ of the all divisors of $m$ for which $a_1 + \dots + a_i$ is a perfect square for all $1 \leq i \leq n$.
+",3,Number theory,Perfect power,IMO Shortlist 2021
+imo-bench-number_theory-010,"Suppose $f$ is a polynomial with integer coefficients of odd degree $d \ge 3$. Assume that the following condition holds:
+
+(Condition) For any positive integer $n$, there exist distinct positive integers $a_1, \dots, a_n$ such that for any $1 \leq i, j \leq n$, $\frac{f(a_i)}{f(a_j)}$ is between $\frac{1}{2}$ and $2$ and is the $d$-th power of some rational number.
+
+Furthermore, for some prime $p$, we know that $f(1)=3^d p$ and $\frac{f(2)}{f'(2)}=\frac{5}{2d}$. Evaluate $f(3)$.
+",$7^d p$,Number theory,Polynomial,IMO Shortlist 2016
+imo-bench-number_theory-006,"For a given positive integer $a$, find the number of positive integers $b$ less than or equal to $a^2+1$ that satisfy the following condition:
+
+<Condition> There exists a positive integer $s$ such that the number of divisors of $s \cdot a$ is equal to the number of divisors of $s \cdot a + s \cdot b$.
+","$a^2 - a + 1$ ( $a \ge 2$)
+0 ($a=1$)",Number theory,Divisor,IMO Shortlist 2018
+imo-bench-number_theory-016,"Find all functions $g:\mathbb{Q}\rightarrow \mathbb{Z}$ that satisfy the following condition for any rational number $x$, integer $a$, and positive integer $b$:
+$g(x)=g(\frac{g(bx-a)+a}{b})$
+","$g(x)=c, g(x)=\lceil x \rceil, g(x)=\lfloor x \rfloor$
+",Number theory,Functional Equation,IMO Shortlist 2013
+imo-bench-number_theory-007,"Find all positive integers $n \geq 2$ that satisfy the following condition:
+(Condition) For any $n$ numbers $b_1, \dots, b_n$ whose sum is not a multiple of $n$, there exists some $1 \leq j \leq n$ such that $b_j, b_j + b_{j-1}, \dots, b_j + b_{j-1} + \dots + b_{j-n+1}$ are all not multiples of $n$.
+(Here, for any integer $i$ with $1 \leq i \leq n$, $b_{i-n} = b_i$.)
+","n is prime
+",Number theory,Divisibility,IMO Shortlist 2017
+imo-bench-number_theory-001,"Find all positive integers $m > 1$ such that there exists a permutation $(a_1, a_2, \dots, a_n)$ of the all divisors of $m$ for which $a_1 + \dots + a_i$ is a perfect square for all $1 \leq i \leq n$.
+",3,Number theory,Perfect power,IMO Shortlist 2021
+imo-bench-number_theory-001,"Find all positive integers $m > 1$ such that there exists a permutation $(a_1, a_2, \dots, a_n)$ of the all divisors of $m$ for which $a_1 + \dots + a_i$ is a perfect square for all $1 \leq i \leq n$.
+",3,Number theory,Perfect power,IMO Shortlist 2021
+imo-bench-number_theory-008,"Does there exist a positive integer $n$ satisfying the following condition? If so, find the smallest such $n$.
+
+(Condition) There exist infinitely many ordered $n$-tuples of positive rational numbers $(x_1, \dots, x_n)$ such that both $\sum_{i=1}^n i \cdot x_i$ and $\frac{1}{x_1 + \dots + x_n} + \frac{1}{x_2 + \dots + x_n} + \dots + \frac{1}{x_n}$ are positive integers.
+",3,Number theory,Divisibility,IMO Shortlist 2017
+imo-bench-number_theory-002,"Find the number of all positive integers $2\leq m \leq 2000$ that satisfy the following condition: For any $m$ distinct positive integers $(n_1, \ldots, n_m)$, at least one of the following two conditions holds: $n_1 + \ldots + n_m$ is a multiple of $m$, or there exists a permutation $(k_1, \ldots, k_m)$ such that $k_1 + 2k_2 + \ldots + mk_m$ is a multiple of $m$.
+",1009,Number theory,Divisibility,IMO Shortlist 2021
+imo-bench-number_theory-002,"Find the number of all positive integers $2\leq m \leq 2000$ that satisfy the following condition: For any $m$ distinct positive integers $(n_1, \ldots, n_m)$, at least one of the following two conditions holds: $n_1 + \ldots + n_m$ is a multiple of $m$, or there exists a permutation $(k_1, \ldots, k_m)$ such that $k_1 + 2k_2 + \ldots + mk_m$ is a multiple of $m$.
+",1009,Number theory,Divisibility,IMO Shortlist 2021

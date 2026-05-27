@@ -1,0 +1,42 @@
+{
+  "dataset": "proofbench",
+  "timestamp": "2026-05-20T10:57:14.925194",
+  "total": 4,
+  "success": 2,
+  "progress": 0,
+  "failed": 2,
+  "problems": [
+    {
+      "problem_id": "PB-Basic-011",
+      "category": "Combinatorics",
+      "status": "FAILED",
+      "iteration_count": 0,
+      "error": "RuntimeError: 运行失败（VERIFIER）：ReadTimeout: The read operation timed out",
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Basic-002",
+      "category": "Algebra",
+      "status": "SUCCESS",
+      "iteration_count": 1,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Basic-012",
+      "category": "Combinatorics",
+      "status": "SUCCESS",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Advanced-003",
+      "category": "Geometry",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    }
+  ]
+}

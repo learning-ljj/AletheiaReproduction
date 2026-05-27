@@ -1,21 +1,38 @@
 #!/usr/bin/env python3
-"""
-从 history.jsonl 中提取各阶段的中间过程输出，保存为独立的 markdown 文件。
+"""从 history.jsonl 中提取各阶段的中间过程输出，保存为独立的 markdown 文件。
 
 功能：
-- 解析 JSONL 中的每个事件
-- 提取 GENERATOR、REVISER、VERIFIER 三个阶段的 content、verification 字段
+- 解析 JSONL 或 JSON 数组格式的事件日志
+- 提取三个阶段的输出：
+  * GENERATOR: content（解答）和 reasoning_content（推理过程）[新增]
+  * REVISER: content（修正内容）
+  * VERIFIER: verification（验证结果）
 - 保存为单独的 .md 文件，保留真实的换行符和格式
+
+关键特性（更新）：
+- 现在从 GENERATOR 阶段提取两个文件：
+  * {turn_id}_generator.md - 模型生成的解答
+  * {turn_id}_generator_reasoning.md - 模型的中间推理过程（用于分析思维过程）
 
 使用方法：
     python extract_stages.py <jsonl_file> [output_dir]
+    python -m evaluation.extract_stages <jsonl_file> [output_dir]
 
 示例：
     # 提取到同目录
-    python extract_stages.py runs/imo-bench-algebra-001_20260502_151156/history.jsonl
+    python -m evaluation.extract_stages runs/imo-bench-algebra-001_20260502_151156/history.jsonl
     
     # 提取到指定目录
-    python extract_stages.py runs/imo-bench-algebra-001_20260502_151156/history.jsonl ./extracted
+    python -m evaluation.extract_stages runs/imo-bench-algebra-001_20260502_151156/history.jsonl ./extracted
+    
+    # 查看提取结果
+    ls -la runs/imo-bench-algebra-001_20260502_151156/extracted/
+    cat runs/imo-bench-algebra-001_20260502_151156/extracted/0_generator_reasoning.md
+
+集成说明：
+- run_and_analyze_selected.py 会为所有非 SUCCESS 题目自动调用本脚本
+- 自动调用命令：python -m evaluation.extract_stages history.jsonl extracted/
+- 提取失败不会中断主流程
 """
 
 import json
@@ -26,19 +43,47 @@ from typing import Optional
 
 
 def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
-    """
-    从 JSONL 或 JSON 数组文件提取所有阶段的输出。
+    """从 JSONL 或 JSON 数组文件提取所有阶段的输出。
     
     支持两种格式：
     1. JSONL：每行一个 JSON 对象
     2. JSON 数组：整个文件是一个 JSON 数组
+    
+    提取内容：
+    - GENERATOR 阶段:
+      * content → {turn_id}_generator.md (模型的解答)
+      * reasoning_content → {turn_id}_generator_reasoning.md (模型的推理过程) [新增]
+    - REVISER 阶段:
+      * content → {turn_id}_reviser.md (修正内容)
+    - VERIFIER 阶段:
+      * verification → {turn_id}_verifier.md (验证结果)
+    
+    输出目录结构示例：
+    ```
+    runs/PB-Basic-001_20260519_093502/extracted/
+    ├── 0_generator.md              # 第1轮生成的解答
+    ├── 0_generator_reasoning.md    # 第1轮的推理过程 (NEW)
+    ├── 1_generator.md              # 第2轮生成的解答
+    ├── 1_generator_reasoning.md    # 第2轮的推理过程 (NEW)
+    ├── 0_reviser.md                # 第1轮修正
+    └── 0_verifier.md               # 第1轮验证
+    ```
+    
+    使用示例：
+    ```python
+    # 提取到当前目录的 extracted 子目录
+    extract_stages("runs/PB-Basic-001_20260519_093502/history.jsonl")
+    
+    # 指定输出目录
+    extract_stages("runs/PB-Basic-001_20260519_093502/history.jsonl", "./extracted")
+    ```
     
     Args:
         jsonl_path: history.jsonl 文件路径
         output_dir: 输出目录（默认：history.jsonl 所在目录）
         
     Returns:
-        提取的文件数量
+        提取的文件数量（包括 reasoning_content 文件）
     """
     jsonl_path = Path(jsonl_path)
     
@@ -88,7 +133,11 @@ def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
     
     print(f"✓ 成功读取 {len(events)} 个事件\n")
     
-    # 提取各阶段的 content
+    # 提取各阶段的 content 和 reasoning_content
+    # 关键更新：GENERATOR 现在提取两个文件
+    # 1. {turn_id}_generator.md - 模型生成的解答
+    # 2. {turn_id}_generator_reasoning.md - 模型的中间推理过程 (NEW)
+    # 这两个文件用于分析模型的思考和解题过程
     stage_mapping = {
         "GENERATOR": "generator",
         "REVISER": "reviser",
@@ -104,37 +153,59 @@ def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
             if node == "VERIFIER":
                 # VERIFIER 的内容存储在 verification 字段
                 content = event.get("verification", "")
+                reasoning_content = None
             else:
                 # GENERATOR 和 REVISER 的内容存储在 content 字段
                 content = event.get("content", "")
+                # GENERATOR 也包含 reasoning_content 字段
+                reasoning_content = event.get("reasoning_content", None)
+                if isinstance(reasoning_content, list):
+                    reasoning_content = "\n\n".join(
+                        f"### 第 {i+1} 轮推理\n{item}"
+                        for i, item in enumerate(reasoning_content)
+                        if item
+                    )
             
-            if not content:
+            if not content and not reasoning_content:
                 print(f"⚠️  跳过：{node} 阶段内容为空")
                 continue
             
             stage_name = stage_mapping[node]
             turn_id = event.get("turn_id", 0)
             
-            # 生成文件名
-            filename = f"{turn_id}_{stage_name}.md"
-            filepath = output_dir / filename
+            # 首先保存主要内容（content 或 verification）
+            if content:
+                filename = f"{turn_id}_{stage_name}.md"
+                filepath = output_dir / filename
+                
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    r"""规范化 lemma 内容中的展示数学格式，把文本中的 LaTeX 显示数学公式标记 \[ ... \] 转换成 Markdown/数学渲染器更通用的 $$ ... $$ 格式。"""
+                    normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.S)
+                    f.write(normalized)
+                
+                saved_files.append(filepath)
+                
+                content_preview = normalized[:80].replace('\n', ' ').strip()
+                if len(normalized) > 80:
+                    content_preview += "..."
+                print(f"✅ 已保存：{filename}")
+                print(f"   📄 大小：{len(normalized)} 字符")
+                print(f"   📝 内容预览：{content_preview}\n")
             
-            # 保存内容
-            # 关键：content 是字符串，包含真实的换行符（从 JSON 反序列化后）
-            with open(filepath, 'w', encoding='utf-8') as f:
-                r"""规范化 lemma 内容中的展示数学格式，把文本中的 LaTeX 显示数学公式标记 \[ ... \] 转换成 Markdown/数学渲染器更通用的 $$ ... $$ 格式。"""
-                normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.S)
-                f.write(normalized)
-            
-            saved_files.append(filepath)
-            
-            # 显示文件信息
-            content_preview = normalized[:80].replace('\n', ' ').strip()
-            if len(normalized) > 80:
-                content_preview += "..."
-            print(f"✅ 已保存：{filename}")
-            print(f"   📄 大小：{len(normalized)} 字符")
-            print(f"   📝 内容预览：{content_preview}\n")
+            # 如果存在 reasoning_content（仅 GENERATOR 有），单独保存
+            if reasoning_content and node == "GENERATOR":
+                reasoning_filename = f"{turn_id}_{stage_name}_reasoning.md"
+                reasoning_filepath = output_dir / reasoning_filename
+                
+                with open(reasoning_filepath, 'w', encoding='utf-8') as f:
+                    r"""规范化推理内容中的数学格式。"""
+                    normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', reasoning_content, flags=re.S)
+                    f.write(normalized)
+                
+                saved_files.append(reasoning_filepath)
+                
+                print(f"✅ 已保存：{reasoning_filename}")
+                print(f"   📄 大小：{len(normalized)} 字符\n")
     
     if not saved_files:
         print("❌ 没有找到任何可提取的阶段输出")
@@ -154,7 +225,35 @@ def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
 
 
 def main(argv: Optional[list] = None) -> int:
-    """主入口"""
+    """主入口 - 提取 history.jsonl 中的所有阶段输出。
+    
+    使用示例：
+    ```bash
+    # 基本用法：提取到同级 extracted 目录
+    python -m evaluation.extract_stages runs/PB-Basic-001_20260519_093502/history.jsonl
+    
+    # 指定输出目录
+    python -m evaluation.extract_stages runs/PB-Basic-001_20260519_093502/history.jsonl ./extracted
+    
+    # 查看生成的文件
+    ls -la runs/PB-Basic-001_20260519_093502/extracted/
+    cat runs/PB-Basic-001_20260519_093502/extracted/0_generator_reasoning.md
+    ```
+    
+    自动调用说明：
+    - run_and_analyze_selected.py 在非 SUCCESS 题目完成后会自动调用本脚本
+    - 命令：python -m evaluation.extract_stages {history.jsonl} {run_dir/extracted}
+    
+    参数说明：
+    - argv[0]: history.jsonl 文件路径（必需）
+    - argv[1]: 输出目录（可选，默认：history.jsonl 同级目录）
+    
+    输出文件类型（新增 reasoning_content）：
+    - {turn_id}_generator.md: Generator 的解答
+    - {turn_id}_generator_reasoning.md: Generator 的推理过程 (NEW!)
+    - {turn_id}_reviser.md: Reviser 的修正
+    - {turn_id}_verifier.md: Verifier 的验证
+    """
     if argv is None:
         argv = sys.argv[1:]
     

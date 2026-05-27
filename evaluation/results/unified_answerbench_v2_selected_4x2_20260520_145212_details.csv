@@ -1,0 +1,9 @@
+problem_id,category,status,iteration_count,error,run_dir
+imo-bench-algebra-002,Algebra,FAILED,0,RuntimeError: 运行失败（GENERATOR）：ReadTimeout: The read operation timed out,
+imo-bench-algebra-025,Algebra,FAILED,3,,
+imo-bench-combinatorics-006,Combinatorics,SUCCESS,3,,
+imo-bench-combinatorics-006,Combinatorics,SUCCESS,1,,
+imo-bench-geometry-001,Geometry,FAILED,3,,
+imo-bench-geometry-065,Geometry,FAILED,0,RuntimeError: 运行失败（GENERATOR@turn0）：ReadTimeout: The read operation timed out,
+imo-bench-number_theory-001,Number theory,FAILED,3,,
+imo-bench-number_theory-010,Number theory,FAILED,3,,

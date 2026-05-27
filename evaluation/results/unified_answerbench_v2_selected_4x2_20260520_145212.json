@@ -1,0 +1,74 @@
+{
+  "dataset": "answerbench_v2",
+  "timestamp": "2026-05-20T14:52:12.052838",
+  "total": 8,
+  "success": 2,
+  "progress": 0,
+  "failed": 6,
+  "problems": [
+    {
+      "problem_id": "imo-bench-algebra-002",
+      "category": "Algebra",
+      "status": "FAILED",
+      "iteration_count": 0,
+      "error": "RuntimeError: 运行失败（GENERATOR）：ReadTimeout: The read operation timed out",
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-algebra-025",
+      "category": "Algebra",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-combinatorics-006",
+      "category": "Combinatorics",
+      "status": "SUCCESS",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-combinatorics-006",
+      "category": "Combinatorics",
+      "status": "SUCCESS",
+      "iteration_count": 1,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-geometry-001",
+      "category": "Geometry",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-geometry-065",
+      "category": "Geometry",
+      "status": "FAILED",
+      "iteration_count": 0,
+      "error": "RuntimeError: 运行失败（GENERATOR@turn0）：ReadTimeout: The read operation timed out",
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-number_theory-001",
+      "category": "Number theory",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "imo-bench-number_theory-010",
+      "category": "Number theory",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    }
+  ]
+}
