@@ -72,6 +72,32 @@ class ProviderFactory:
                 )
             return {"provider": deepseek_cfg}
 
+        if provider == "litellm":
+            litellm_cfg = cls._resolve_provider_config(config, "litellm")
+            api_key = litellm_cfg.get("api_key")
+            base_url = litellm_cfg.get("base_url")
+            model = litellm_cfg.get("model")
+            if not api_key or cls._contains_placeholder(api_key):
+                raise ValueError(
+                    "LiteLLM provider selected but `litellm.api_key` is missing or contains placeholder. "
+                    "Ensure .env contains OPENAI_API_KEY and that you called load_dotenv() before loading config."
+                )
+            if not base_url or cls._contains_placeholder(base_url):
+                raise ValueError(
+                    "LiteLLM provider selected but `litellm.base_url` is missing or contains placeholder. "
+                    "Ensure .env contains OPENAI_BASE_URL."
+                )
+            if base_url and not str(base_url).startswith("http"):
+                raise ValueError(
+                    f"LiteLLM base_url looks invalid: {base_url!r}. It must start with 'http://' or 'https://'."
+                )
+            if not model or cls._contains_placeholder(model):
+                raise ValueError(
+                    "LiteLLM provider selected but `litellm.model` is missing or contains placeholder. "
+                    "Ensure .env contains LITELLM_MODEL."
+                )
+            return {"provider": litellm_cfg}
+
         raise ValueError(f"Unknown LLM provider: {provider!r}.")
 
     @staticmethod

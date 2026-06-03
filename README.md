@@ -67,7 +67,10 @@ pip install -r requirements.txt
 
 | 变量 | 说明 |
 |---|---|
-| `LLM_PROVIDER` | 当前使用的 provider，例如 `deepseek` 或 `volcano` |
+| `LLM_PROVIDER` | 当前使用的 provider，例如 `deepseek` / `volcano` / `litellm` |
+| `OPENAI_API_KEY` | LiteLLM/OpenAI 兼容 API Key |
+| `OPENAI_BASE_URL` | LiteLLM/OpenAI 兼容 Base URL |
+| `LITELLM_MODEL` | LiteLLM 模型名（例如 `gpt-5.5`） |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key |
 | `VOLCANO_API_KEY` | Volcano Engine API Key |
 | `VOLCANO_BASE_URL` | Volcano API base URL |

@@ -42,12 +42,12 @@ class VerifierAgent:
         # - 若缺失，则把原始 proof_text 直接交给 Verifier 做“格式问题”审查。
         # 大白话：格式判定不在 Generator/Orchestrator 抢先做，统一由 Verifier 给出结论。
         raw_proof_text = (proof_text or "").strip()
-        solution_body = extract_xml_tag(raw_proof_text, "solution").strip() or raw_proof_text
+        # solution_body = extract_xml_tag(raw_proof_text, "solution").strip() or raw_proof_text
 
         # Phase1 负责整体分析和初步判断，输出给 Phase2 作为上下文提示。
         phase1_content = self.prompts["verifier"]["phase1_user"].format(
             problem_statement=problem_text,
-            solution=solution_body,
+            solution=raw_proof_text,
         )
 
         messages: list = [

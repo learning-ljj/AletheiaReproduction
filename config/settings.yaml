@@ -1,4 +1,4 @@
-provider: "${LLM_PROVIDER}"   # "deepseek" 或 "volcano"
+provider: "${LLM_PROVIDER}"   # "deepseek" / "volcano" / "litellm"
 
 llm_defaults:
   thinking: true
@@ -25,6 +25,11 @@ volcano:
   #   - 思考模式输出两个字段：reasoning_content（思维链）+ content（最终回答）
   #   - 多轮对话中，上一轮的 reasoning_content 不拼入上下文，只传 content
   #   - 工具调用场景：同一 turn 内子请求必须回传 reasoning_content；新 turn 必须清除
+
+litellm:
+  api_key: "${OPENAI_API_KEY}"         # LiteLLM/OpenAI 兼容 API Key
+  base_url: "${OPENAI_BASE_URL}"
+  model: "gpt-5.5"
 
 tools:
   e2b_api_key: "${E2B_API_KEY}"        # 代码沙箱

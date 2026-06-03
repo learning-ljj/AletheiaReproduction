@@ -1,0 +1,9 @@
+problem_id,category,status,iteration_count,error,run_dir
+imo-bench-algebra-002,Algebra,FAILED,3,,
+imo-bench-algebra-025,Algebra,FAILED,3,,
+imo-bench-combinatorics-006,Combinatorics,FAILED,3,,
+imo-bench-combinatorics-006,Combinatorics,FAILED,3,,
+imo-bench-geometry-001,Geometry,FAILED,3,,
+imo-bench-geometry-065,Geometry,FAILED,3,,
+imo-bench-number_theory-001,Number theory,FAILED,3,,
+imo-bench-number_theory-010,Number theory,FAILED,3,,

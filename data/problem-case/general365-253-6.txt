@@ -1,0 +1,7 @@
+There is a polynomial function $f(x)$,$f(1)=2,f(2)=8,f(3)=24,f(4)=64$. What is the expression of $f(n)$? Select one or more options that you think are correct.
+A \(n \cdot 2^n\)
+B \(\frac{7}{3}n^3 - 9n^2 + \frac{50}{3}n - 8\)
+C \(n^4 - \frac{23}{3}n^3 + 26n^2 - \frac{100}{3}n + 16\)
+Output your final answer at the end of your reply using the following format:
+### The final answer is: <Your Answer>
+Select one or more appropriate options as your final answer based on the question above.

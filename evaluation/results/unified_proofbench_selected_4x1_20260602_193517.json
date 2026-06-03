@@ -1,0 +1,42 @@
+{
+  "dataset": "proofbench",
+  "timestamp": "2026-06-02T19:35:17.971871",
+  "total": 4,
+  "success": 0,
+  "progress": 0,
+  "failed": 4,
+  "problems": [
+    {
+      "problem_id": "PB-Basic-011",
+      "category": "Combinatorics",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Basic-002",
+      "category": "Algebra",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Basic-012",
+      "category": "Combinatorics",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    },
+    {
+      "problem_id": "PB-Advanced-003",
+      "category": "Geometry",
+      "status": "FAILED",
+      "iteration_count": 3,
+      "error": null,
+      "run_dir": null
+    }
+  ]
+}
