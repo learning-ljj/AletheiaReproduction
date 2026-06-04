@@ -1,6 +1,8 @@
 """General365 批量评测脚本：读 CSV 逐题运行通用推理分支并输出状态统计。"""
 
 import argparse
+import csv
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -119,6 +121,47 @@ def summarize_results(results: list[dict]) -> dict:
         "failed": failed,
         "by_subcategory": by_subcategory,
     }
+
+
+def write_results(
+    result: dict,
+    output_dir: Path,
+    dataset_path: Path,
+    timestamp: str,
+) -> tuple[Path, Path]:
+    """Write result JSON and CSV to output_dir.
+
+    Args:
+        result: Full result dict (includes 'problems' list and summary stats).
+        output_dir: Directory for output files.
+        dataset_path: Original dataset path (used for filename stem).
+        timestamp: Timestamp string for filenames.
+
+    Returns:
+        (json_path, csv_path)
+    """
+    dataset_stem = dataset_path.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = output_dir / f"general365_{dataset_stem}_{timestamp}.json"
+    json_path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    csv_path = output_dir / f"general365_{dataset_stem}_{timestamp}_details.csv"
+    problems = result.get("problems", [])
+    fieldnames = [
+        "problem_id", "subcategory", "ground_truth", "status",
+        "iteration_count", "error_type", "error_message", "run_dir",
+    ]
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in problems:
+            writer.writerow({k: row.get(k) for k in fieldnames})
+
+    return json_path, csv_path
 
 
 class General365EvaluationRunner:
