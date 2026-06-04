@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── 加载配置 ──
     config = load_config()
-    prompts = load_prompts()
+    prompts = load_prompts(resolve_prompt_path(args.task))
 
     # ── 覆盖 max_turns ──
     if args.max_turns is not None:
