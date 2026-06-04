@@ -1,7 +1,6 @@
 """General365 批量评测脚本：读 CSV 逐题运行通用推理分支并输出状态统计。"""
 
 import argparse
-import csv
 import json
 from datetime import datetime
 from pathlib import Path
@@ -128,8 +127,8 @@ def write_results(
     output_dir: Path,
     dataset_path: Path,
     timestamp: str,
-) -> tuple[Path, Path]:
-    """Write result JSON and CSV to output_dir.
+) -> Path:
+    """Write result JSON to output_dir.
 
     Args:
         result: Full result dict (includes 'problems' list and summary stats).
@@ -138,7 +137,7 @@ def write_results(
         timestamp: Timestamp string for filenames.
 
     Returns:
-        (json_path, csv_path)
+        json_path
     """
     dataset_stem = dataset_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,20 +147,22 @@ def write_results(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    return json_path
 
-    csv_path = output_dir / f"general365_{dataset_stem}_{timestamp}_details.csv"
-    problems = result.get("problems", [])
-    fieldnames = [
-        "problem_id", "subcategory", "ground_truth", "status",
-        "iteration_count", "error_type", "error_message", "run_dir",
-    ]
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in problems:
-            writer.writerow({k: row.get(k) for k in fieldnames})
 
-    return json_path, csv_path
+def print_summary(stats: dict) -> None:
+    """Print summary statistics to terminal."""
+    print(f"\n{'=' * 50}")
+    print(f"Total:   {stats['total']}")
+    print(f"SUCCESS: {stats['success']}")
+    print(f"PROGRESS: {stats['progress']}")
+    print(f"FAILED:  {stats['failed']}")
+    if stats.get("by_subcategory"):
+        print()
+        for subcat, counts in stats["by_subcategory"].items():
+            print(f"  {subcat}: {counts['total']} total "
+                  f"(SUCCESS={counts['SUCCESS']}, PROGRESS={counts['PROGRESS']}, FAILED={counts['FAILED']})")
+    print(f"{'=' * 50}\n")
 
 
 class General365EvaluationRunner:
