@@ -21,6 +21,22 @@ def load_answerbench_full(path: str = "data/imobench/answerbench_v2.csv") -> lis
 	)
 
 
+def load_general365_full(path: str = "data/problem-case/general365_selected_20.csv") -> list[dict]:
+	"""加载 General365 完整字段（含短答、题型和来源）。"""
+	return _load_csv(
+		path,
+		field_map={
+			"Problem": "problem",
+			"Short Answer": "answer",
+			"Category": "category",
+			"Subcategory": "subcategory",
+			"Source": "source",
+		},
+		id_prefix="general365",
+		problem_id_column="Problem ID",
+	)
+
+
 def load_proofbench_full(path: str = "data/imobench/proofbench.csv") -> list[dict]:
 	"""加载 proofbench 完整字段（含 Solution、Category、Level、Source）。"""
 	return _load_csv(
