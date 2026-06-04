@@ -187,6 +187,9 @@ class General365EvaluationRunner:
     def _run_single_problem(self, problem_entry: dict) -> dict:
         """Run a single problem through the agent and return a result dict.
 
+        If extract_stages is True and status is not SUCCESS, attempts to extract
+        intermediate stages from history.jsonl.
+
         Raises:
             ValueError: If problem text is empty.
         """
@@ -198,7 +201,8 @@ class General365EvaluationRunner:
         run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"{problem_id}_{run_ts}"
 
-        result_dir = str(self.runs_root / run_id)
+        result_dir_path = self.runs_root / run_id
+        result_dir = str(result_dir_path)
 
         try:
             state = self.agent.solve(
@@ -216,6 +220,20 @@ class General365EvaluationRunner:
             )
             result["error_type"] = type(exc).__name__
             result["error_message"] = str(exc)
+            final_status = "FAILED"
+
+        # Extract stages for non-SUCCESS problems
+        if self.extract_stages and final_status != "SUCCESS":
+            history_path = result_dir_path / "history.jsonl"
+            if history_path.exists():
+                extracted_dir = result_dir_path / "extracted"
+                try:
+                    if self.stage_extractor is None:
+                        from evaluation.extract_stages import extract_stages as default_extractor
+                        self.stage_extractor = default_extractor
+                    self.stage_extractor(str(history_path), str(extracted_dir))
+                except Exception as exc:
+                    result["stage_extraction_error"] = str(exc)
 
         return result
 
