@@ -1,6 +1,9 @@
 """General365 批量评测脚本：读 CSV 逐题运行通用推理分支并输出状态统计。"""
 
 import argparse
+from datetime import datetime
+from pathlib import Path
+
 from src.memory.state import RunStatus
 
 
@@ -70,6 +73,61 @@ def build_problem_result(
         "stage_extraction_status": extraction_status,
         "stage_extraction_error": extraction_error,
     }
+
+
+class General365EvaluationRunner:
+    """Runner that processes General365 problems through AletheiaAgent."""
+
+    def __init__(
+        self,
+        agent,
+        dataset_path: str = "data/problem-case/general365_selected_20.csv",
+        max_turns: int | None = None,
+        extract_stages: bool = True,
+        runs_root: str = "runs",
+        stage_extractor=None,
+    ):
+        self.agent = agent
+        self.dataset_path = dataset_path
+        self.max_turns = max_turns
+        self.extract_stages = extract_stages
+        self.runs_root = Path(runs_root)
+        self.stage_extractor = stage_extractor
+
+    def _run_single_problem(self, problem_entry: dict) -> dict:
+        """Run a single problem through the agent and return a result dict.
+
+        Raises:
+            ValueError: If problem text is empty.
+        """
+        problem_text = (problem_entry.get("problem") or "").strip()
+        if not problem_text:
+            raise ValueError(f"Empty problem text for {problem_entry.get('problem_id', 'unknown')}")
+
+        problem_id = problem_entry["problem_id"]
+        run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_id = f"{problem_id}_{run_ts}"
+
+        result_dir = str(self.runs_root / run_id)
+
+        try:
+            state = self.agent.solve(
+                problem_id=run_id,
+                problem_text=problem_text,
+                ground_truth=problem_entry.get("answer"),
+            )
+            final_status = state_to_status(state)
+            result = build_problem_result(
+                problem_entry, state, final_status, result_dir,
+            )
+        except Exception as exc:
+            result = build_problem_result(
+                problem_entry, None, "FAILED", result_dir,
+            )
+            result["error_type"] = type(exc).__name__
+            result["error_message"] = str(exc)
+
+        return result
 
 
 def build_parser() -> argparse.ArgumentParser:
