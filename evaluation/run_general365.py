@@ -219,6 +219,44 @@ class General365EvaluationRunner:
 
         return result
 
+    def run_all(self, limit: int | None = None) -> dict:
+        """Run all problems from the dataset and return aggregated results.
+
+        Args:
+            limit: Optional cap on number of problems to run.
+
+        Returns:
+            Dict with dataset metadata, summary stats, and per-problem results.
+        """
+        from evaluation.data_loader import load_general365_full
+
+        all_rows = load_general365_full(self.dataset_path)
+        rows = apply_limit(all_rows, limit)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        problems: list[dict] = []
+
+        for i, entry in enumerate(rows):
+            pid = entry.get("problem_id", f"row_{i}")
+            subcat = entry.get("subcategory", "unknown")
+            print(f"[{i + 1}/{len(rows)}] {pid} ({subcat})...", end=" ", flush=True)
+
+            result = self._run_single_problem(entry)
+            problems.append(result)
+            print(f"{result['status']}")
+
+        stats = summarize_results(problems)
+        result = {
+            "dataset": "general365",
+            "dataset_path": str(self.dataset_path),
+            "timestamp": timestamp,
+            **stats,
+            "problems": problems,
+        }
+
+        print_summary(stats)
+        return result
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
