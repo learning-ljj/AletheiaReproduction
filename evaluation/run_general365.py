@@ -1,6 +1,7 @@
 """General365 批量评测脚本：读 CSV 逐题运行通用推理分支并输出状态统计。"""
 
 import argparse
+from src.memory.state import RunStatus
 
 
 def apply_limit(rows: list[dict], limit: int | None) -> list[dict]:
@@ -14,6 +15,23 @@ def apply_limit(rows: list[dict], limit: int | None) -> list[dict]:
     if limit < 0:
         raise ValueError(f"limit must be non-negative, got {limit}")
     return list(rows[:limit])
+
+
+def state_to_status(state) -> str:
+    """Map ProofState.status to SUCCESS/PROGRESS/FAILED string.
+
+    Raises:
+        ValueError: If status is None or unknown.
+    """
+    if state.status is None:
+        raise ValueError("state.status is None")
+    if state.status == RunStatus.SUCCESS:
+        return "SUCCESS"
+    if state.status == RunStatus.PROGRESS:
+        return "PROGRESS"
+    if state.status == RunStatus.FAILED:
+        return "FAILED"
+    raise ValueError(f"Unknown state.status: {state.status}")
 
 
 def build_parser() -> argparse.ArgumentParser:
