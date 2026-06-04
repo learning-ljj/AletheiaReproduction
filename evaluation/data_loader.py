@@ -118,6 +118,22 @@ def lookup_ground_truth(problem_id: str) -> tuple[str | None, str | None]:
 	return None, None
 
 
+def lookup_general365_ground_truth(
+	problem_id: str,
+	path: str | None = None,
+) -> tuple[str | None, str | None]:
+	"""按 General365 problem_id 回填短答案。"""
+	normalized = _normalize_problem_id(problem_id)
+	if not normalized:
+		return None, None
+
+	dataset_path = path or "data/problem-case/general365_selected_20.csv"
+	for row in load_general365_full(dataset_path):
+		if (row.get("problem_id") or "").strip() == normalized:
+			return row.get("answer"), f"{Path(dataset_path).name}:Short Answer"
+	return None, None
+
+
 def _load_csv(
 	path: str,
 	field_map: dict[str, str],
