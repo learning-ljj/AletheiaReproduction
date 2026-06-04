@@ -14,7 +14,7 @@ load_dotenv()
 from src.core.agent import AletheiaAgent
 from src.core.config import load_config, load_prompts
 from src.memory.state import RunStatus, ProblemSnapshot, collect_and_generate_error_summary
-from evaluation.data_loader import lookup_ground_truth
+from evaluation.data_loader import lookup_ground_truth, lookup_general365_ground_truth
 from src.utils.logging.worklog import WorklogBuilder, resolve_run_artifact_path, resolve_run_log_path
 
 
@@ -24,6 +24,15 @@ def resolve_prompt_path(task: str) -> str:
         return "config/prompts"
     if task == "general":
         return "config/prompts_general"
+    raise ValueError(f"Unknown task: {task}")
+
+
+def lookup_ground_truth_for_task(task: str, problem_id: str) -> tuple[str | None, str | None]:
+    """Dispatch ground truth lookup based on task profile."""
+    if task == "math":
+        return lookup_ground_truth(problem_id)
+    if task == "general":
+        return lookup_general365_ground_truth(problem_id)
     raise ValueError(f"Unknown task: {task}")
 
 
@@ -141,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     run_id = f"{problem_id}_{run_ts}"
 
     agent = AletheiaAgent(config, prompts)
-    ground_truth, gt_source = lookup_ground_truth(problem_id)
+    ground_truth, gt_source = lookup_ground_truth_for_task(args.task, problem_id)
     print(f">>> Problem ID: {problem_id}")
     print(f">>> Run ID:     {run_id}")
     print(f">>> Max turns: {agent.max_turns}")
