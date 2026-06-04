@@ -73,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output path for markdown worklog (default: runs/{problem_id}/artifact/worklog.md).",
     )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="math",
+        choices=["math", "general"],
+        help="Task profile: math for mathematical reasoning (default), general for general reasoning.",
+    )
     return parser
 
 
