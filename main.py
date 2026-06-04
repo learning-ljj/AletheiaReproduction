@@ -18,6 +18,15 @@ from evaluation.data_loader import lookup_ground_truth
 from src.utils.logging.worklog import WorklogBuilder, resolve_run_artifact_path, resolve_run_log_path
 
 
+def resolve_prompt_path(task: str) -> str:
+    """Resolve the prompt directory for a supported task profile."""
+    if task == "math":
+        return "config/prompts"
+    if task == "general":
+        return "config/prompts_general"
+    raise ValueError(f"Unknown task: {task}")
+
+
 def _configure_stdio_utf8() -> None:
     """统一 stdout/stderr 为 UTF-8，避免 Windows 重定向日志乱码。"""
     for stream in (sys.stdout, sys.stderr):
