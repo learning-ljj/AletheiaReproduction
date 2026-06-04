@@ -296,13 +296,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point (stub: only parser; Agent integration in later tasks)."""
+    """Main entry point: parse args, instantiate Agent, run all, write results."""
+    from src.core.agent import AletheiaAgent
+    from src.core.config import load_config, load_prompts
+
     parser = build_parser()
     args = parser.parse_args(argv)
-    print(f">>> Dataset: {args.dataset}")
-    print(f">>> Max turns: {args.max_turns or 'default'}")
-    print(f">>> Limit: {args.limit or 'all'}")
-    print(">>> Runner not yet implemented (parser stub)")
+
+    config = load_config()
+    prompts = load_prompts("config/prompts_general")
+
+    agent = AletheiaAgent(config, prompts)
+    runner = General365EvaluationRunner(
+        agent=agent,
+        dataset_path=args.dataset,
+        max_turns=args.max_turns,
+        runs_root=config.get("agent", {}).get("runs_root", "runs"),
+    )
+
+    result = runner.run_all(limit=args.limit)
+
+    output_dir = Path(args.output_dir) if args.output_dir else Path("results/general365")
+    timestamp = result["timestamp"]
+    json_path = write_results(result, output_dir, Path(args.dataset), timestamp)
+    print(f"Results saved to: {json_path}")
+
     return 0
 
 
