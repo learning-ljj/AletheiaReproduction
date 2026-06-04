@@ -75,6 +75,52 @@ def build_problem_result(
     }
 
 
+def summarize_results(results: list[dict]) -> dict:
+    """Aggregate problem results into summary statistics.
+
+    Args:
+        results: List of result dicts from build_problem_result().
+
+    Returns:
+        Dict with total/success/progress/failed counts and by_subcategory breakdown.
+
+    Raises:
+        ValueError: If a result has an unknown status or missing subcategory.
+    """
+    total = len(results)
+    success = 0
+    progress = 0
+    failed = 0
+    by_subcategory: dict[str, dict[str, int]] = {}
+
+    for r in results:
+        status = r.get("status")
+        if status not in ("SUCCESS", "PROGRESS", "FAILED"):
+            raise ValueError(f"Unknown status in result: {status}")
+
+        if status == "SUCCESS":
+            success += 1
+        elif status == "PROGRESS":
+            progress += 1
+        elif status == "FAILED":
+            failed += 1
+
+        subcat = r.get("subcategory")
+        if subcat is None:
+            raise KeyError(f"Missing subcategory in result: {r.get('problem_id')}")
+        bucket = by_subcategory.setdefault(subcat, {"total": 0, "SUCCESS": 0, "PROGRESS": 0, "FAILED": 0})
+        bucket["total"] += 1
+        bucket[status] += 1
+
+    return {
+        "total": total,
+        "success": success,
+        "progress": progress,
+        "failed": failed,
+        "by_subcategory": by_subcategory,
+    }
+
+
 class General365EvaluationRunner:
     """Runner that processes General365 problems through AletheiaAgent."""
 
