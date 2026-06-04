@@ -3,6 +3,19 @@
 import argparse
 
 
+def apply_limit(rows: list[dict], limit: int | None) -> list[dict]:
+    """Return the first `limit` rows, or all rows if limit is None.
+
+    Raises:
+        ValueError: If limit is negative.
+    """
+    if limit is None:
+        return list(rows)
+    if limit < 0:
+        raise ValueError(f"limit must be non-negative, got {limit}")
+    return list(rows[:limit])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="General365 Batch Evaluation Runner",
@@ -16,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=None,
+        default=3,
         help="Override max refinement turns for each problem.",
     )
     parser.add_argument(
