@@ -42,6 +42,26 @@ from pathlib import Path
 from typing import Optional
 
 
+def normalize_latex_display_math(text: str) -> str:
+    r"""规范化文本中的 LaTeX 显示数学公式格式。
+
+    将 LaTeX 的 \[ ... \] 、\( ... \) 显示数学标记转换为 Markdown 通用的 $$ ... $$ 格式，
+    确保在各类 Markdown 渲染器（如 Jupyter、GitHub、VS Code 等）中正确显示。
+
+    处理方式：
+    - 使用非贪婪匹配 (.*?) 配合 re.S 标志，支持跨行匹配
+    - 保留公式内部的所有原始内容（包括换行符和缩进）
+    - 仅替换标记符本身，不修改公式内容
+
+    Args:
+        text: 包含 LaTeX 显示数学标记的原始文本
+
+    Returns:
+        规范化后的文本，\[ ... \] 被替换为 $$ ... $$
+    """
+    return re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.S)
+
+
 def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
     """从 JSONL 或 JSON 数组文件提取所有阶段的输出。
     
@@ -179,8 +199,8 @@ def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
                 filepath = output_dir / filename
                 
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    r"""规范化 lemma 内容中的展示数学格式，把文本中的 LaTeX 显示数学公式标记 \[ ... \] 转换成 Markdown/数学渲染器更通用的 $$ ... $$ 格式。"""
-                    normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.S)
+                    # 复用规范化函数，将 LaTeX 显示数学标记转为 Markdown 通用格式
+                    normalized = normalize_latex_display_math(content)
                     f.write(normalized)
                 
                 saved_files.append(filepath)
@@ -198,8 +218,8 @@ def extract_stages(jsonl_path: str, output_dir: Optional[str] = None) -> int:
                 reasoning_filepath = output_dir / reasoning_filename
                 
                 with open(reasoning_filepath, 'w', encoding='utf-8') as f:
-                    r"""规范化推理内容中的数学格式。"""
-                    normalized = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', reasoning_content, flags=re.S)
+                    # 复用规范化函数，统一处理推理内容中的数学公式格式
+                    normalized = normalize_latex_display_math(reasoning_content)
                     f.write(normalized)
                 
                 saved_files.append(reasoning_filepath)

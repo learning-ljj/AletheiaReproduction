@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
-import httpx
+import sys
+import time
 
 
 class StreamTransport:
@@ -15,35 +14,68 @@ class StreamTransport:
         *,
         client,
         stream_file,
+        max_retries: int = 0,
     ):
         # 构造函数说明：
         # - client: 已构建的 SDK 客户端实例（用于发起流式请求）
         # - stream_file: 可选的输出文件/流（如 sys.stderr 或 open file），用于打印流式输出与重试信息
+        # - max_retries: LLM API 调用失败时的最大重试次数（0 = 不重试），来自 settings.yaml resilience.llm_retry_max_attempts
         self._client = client
         self._stream_file = stream_file
+        self._max_retries = max_retries
+
+    def _log(
+        self,
+        message: str,
+        *args,
+    ) -> None:
+        """将消息打印到 stream_file（或 stderr）并立即刷新。"""
+        out = self._stream_file or sys.stderr
+        if args:
+            message = message % args
+        print(message, file=out, flush=True)
 
     def stream_completion(
         self,
         kwargs: dict,
         stream_prefix: str | None = None,
     ) -> tuple[str, str, list[dict]]:
-        """Request streaming completion and return reasoning/content/tool-calls."""
-        # 零重试，失败即抛，让问题快速暴露。
+        """Request streaming completion with optional retry on any failure.
+
+        重试策略：
+        - 捕获任意 Exception，无论网络错误、API 返回错误还是其他异常都触发重试。
+        - 每次重试前等待指数退避时间：backoff = 1 * (2 ** attempt) 秒。
+        - 每次失败在 stream_file（或 stderr）上打印告警。
+        - 超过 max_retries 次后仍失败，抛出最后一次异常。
+        - KeyboardInterrupt / SystemExit 不会被捕获，保证可中断。
+        """
+        last_exc = None
         out = self._stream_file
-        logger = logging.getLogger(__name__)
-        try:
-            return self._do_stream_completion(kwargs, stream_prefix=stream_prefix)
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as exc:
-            if out:
-                print(
-                    f"\n[STREAM ERROR] Request failed: {exc!r}",
-                    file=out,
-                    flush=True,
+
+        for attempt in range(self._max_retries + 1):
+            if attempt > 0:
+                # 指数退避：第 1 次重试等 2s，第 2 次等 4s，第 3 次等 8s …
+                backoff = 1 * (2 ** (attempt - 1))
+                self._log(
+                    "\n[RETRY] 等待 %.1fs 后进行第 %d 次重试（最多 %d 次）...",
+                    backoff, attempt, self._max_retries,
                 )
-            else:
-                logger.error("LLM stream failed: %r", exc)
-            # 直接抛出原始异常，方便定位根因。
-            raise
+                time.sleep(backoff)
+
+            try:
+                return self._do_stream_completion(kwargs, stream_prefix=stream_prefix)
+            except Exception as exc:
+                last_exc = exc
+                self._log(
+                    "\n[STREAM WARNING] API 请求失败（第 %d/%d 次）：%s: %s",
+                    attempt + 1, self._max_retries + 1,
+                    type(exc).__name__, exc,
+                )
+                # 还剩重试次数则继续循环，否则 fallthrough 到 raise
+
+        # 所有重试均失败，抛出最后一次异常
+        self._log("\n[STREAM ERROR] API 请求在 %d 次尝试后全部失败，放弃。", self._max_retries + 1)
+        raise last_exc  # type: ignore[misc]  # 循环至少执行一次，last_exc 一定有值
 
     def _do_stream_completion(
         self,

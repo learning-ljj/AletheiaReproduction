@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -186,8 +185,8 @@ def main(argv: list[str] | None = None) -> int:
                     tmp_path = state_path.parent / f".{state_path.name}.tmp"
                     tmp_path.write_text(updated_data + "\n", encoding="utf-8")
                     tmp_path.replace(state_path)
-            except Exception as exc:  # noqa: BLE001
-                logging.getLogger(__name__).warning(f"Failed to process error summary: {exc}")
+            except Exception:  # noqa: BLE001
+                pass
     
     if state is not None:
         print("\n" + "=" * 70)
@@ -222,7 +221,6 @@ def main(argv: list[str] | None = None) -> int:
             if generated:
                 print(f">>> Worklog markdown saved to: {generated}")
         except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).error("Worklog generation failed", exc_info=True)
             print(f">>> Worklog generation failed: {exc}", file=sys.stderr)
 
     print(f">>> JSONL logs saved to: {resolve_run_log_path(problem_id=run_id, runs_root=runs_root)}")

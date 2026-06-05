@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -16,8 +15,6 @@ from uuid import uuid4
 
 from src.memory.state import ProblemSnapshot, StageSnapshot, EventSnapshot
 from src.tools.artifact_reader import read_artifact
-
-_logger = logging.getLogger(__name__)
 
 # ── 上下文变量：在当前协程/线程中隐式传递 ProblemMemory 实例 ──
 _CURRENT_PROBLEM_MEMORY: ContextVar["ProblemMemory | None"] = ContextVar(
@@ -427,12 +424,6 @@ class ProblemMemory:
             counter += 1
         candidate = f"{base}_{counter}.{ext}"
 
-        # 记录冲突警告
-        _logger.warning(
-            "Lemma 文件名冲突：'%s' 已存在，将使用 '%s'",
-            desired_name,
-            candidate,
-        )
         return candidate
 
     def count_lemmas(self) -> int:

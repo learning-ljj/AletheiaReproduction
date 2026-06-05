@@ -44,12 +44,17 @@ class LLMClient:
         self._max_tokens = bundle.max_tokens
         self._stream_file = sys.stdout if stream_file is _UNSET else stream_file
 
+        # 从归一化 payload 中提取弹性配置
+        # llm_retry_max_attempts 由 ProviderFactory.resolve_provider_payload 注入
+        self._llm_retry_max_attempts = int(config.get("llm_retry_max_attempts", 0))
+
         # 职责拆分：
         # StreamTransport 负责底层流式读取与网络重试。
         # ToolCallSession 负责“单轮对话内”多次工具调用闭环。
         self._stream_transport = StreamTransport(
             client=self._client,
             stream_file=self._stream_file,
+            max_retries=self._llm_retry_max_attempts,
         )
         self._tool_call_session = ToolCallSession(
             stream_transport=self._stream_transport,

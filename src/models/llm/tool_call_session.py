@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import Callable
 
 from src.models.llm.stream_transport import StreamTransport
@@ -78,12 +77,7 @@ class ToolCallSession:
                     # 参数期望为 JSON 字符串；若流式被截断导致无效 JSON，则跳过该调用
                     func_args = json.loads(raw_args)
                 except (json.JSONDecodeError, ValueError):
-                    # 流式截断导致参数不完整时，给出警告并跳过该次调用。
-                    logging.getLogger(__name__).warning(
-                        "Skip tool call due to invalid/incomplete JSON args. function=%s raw_args=%r",
-                        func_name,
-                        raw_args,
-                    )
+                    # 流式截断导致参数不完整时，跳过该次调用。
                     continue
 
                 # 真正执行工具，并记录审计轨迹，记录了调用名、入参、返回值。

@@ -37,10 +37,29 @@ class ProviderFactory:
         return {**shared_defaults, **provider_config}
 
     @classmethod
+    def _resolve_retry_config(cls, config: dict) -> int:
+        """从配置中提取 LLM API 调用最大重试次数。
+
+        查找顺序：
+        1. resilience.llm_retry_max_attempts（settings.yaml 弹性配置）
+        2. 默认值 0（不重试）
+        """
+        resilience = config.get("resilience") or {}
+        return int(resilience.get("llm_retry_max_attempts", 0))
+
+    @classmethod
     def resolve_provider_payload(cls, config: dict) -> dict:
-        """Resolve provider from full settings and normalize to {'provider': cfg}."""
+        """Resolve provider from full settings and normalize to {'provider': cfg}.
+
+        返回的 payload 除 'provider' 外还携带顶层弹性配置字段，供下游 LLMClient/StreamTransport 使用。
+        目前支持：
+        - llm_retry_max_attempts: LLM API 调用失败时的最大重试次数（来自 resilience 段）
+        """
         # 约定：配置中 provider 必须是字符串（如 deepseek/volcano）。归一化后的返回值始终使用固定键 'provider'，这样下游 LLMClient 不再关心具体厂商字段名。
         provider = config.get("provider")
+
+        # 在所有 provider 分支前统一提取弹性配置
+        retry_attempts = cls._resolve_retry_config(config)
 
         if provider == "volcano":
             volcano_cfg = cls._resolve_provider_config(config, "volcano")
@@ -55,7 +74,7 @@ class ProviderFactory:
                 raise ValueError(
                     f"Volcano base_url looks invalid: {base_url!r}. It must start with 'http://' or 'https://'."
                 )
-            return {"provider": volcano_cfg}
+            return {"provider": volcano_cfg, "llm_retry_max_attempts": retry_attempts}
 
         if provider == "deepseek":
             deepseek_cfg = cls._resolve_provider_config(config, "deepseek")
@@ -70,7 +89,7 @@ class ProviderFactory:
                 raise ValueError(
                     f"DeepSeek base_url looks invalid: {base_url!r}. It must start with 'http://' or 'https://'."
                 )
-            return {"provider": deepseek_cfg}
+            return {"provider": deepseek_cfg, "llm_retry_max_attempts": retry_attempts}
 
         if provider == "litellm":
             litellm_cfg = cls._resolve_provider_config(config, "litellm")
@@ -96,7 +115,7 @@ class ProviderFactory:
                     "LiteLLM provider selected but `litellm.model` is missing or contains placeholder. "
                     "Ensure .env contains LITELLM_MODEL."
                 )
-            return {"provider": litellm_cfg}
+            return {"provider": litellm_cfg, "llm_retry_max_attempts": retry_attempts}
 
         raise ValueError(f"Unknown LLM provider: {provider!r}.")
 

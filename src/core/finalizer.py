@@ -5,13 +5,10 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
 from src.memory.state import ProofState, RunStatus, VerificationDecision, ProblemSnapshot, StageSnapshot
-
-_logger = logging.getLogger(__name__)
 
 
 class FinalizerEngine:
@@ -214,18 +211,22 @@ class FinalizerEngine:
 
     def _save_artifact(self, state: ProofState) -> None:
         """将 final_output 写为 Markdown 文件。"""
-        from src.utils.logging.logger import save_final_output_markdown
+        import re
 
-        if not (state.final_output or "").strip():
+        output = (state.final_output or "").strip()
+        if not output:
             return
+
+        # 将展示数学的 LaTeX 标记从 \[...\] 转换为 $$...$$
+        normalized = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", output, flags=re.S)
+
+        artifact_dir = self.runs_root / state.problem_id / "artifact"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        target_path = artifact_dir / "final_output.md"
         try:
-            save_final_output_markdown(
-                problem_id=state.problem_id,
-                final_output=state.final_output,
-                runs_root=self.runs_root,
-            )
-        except OSError as exc:
-            _logger.error("Failed to save final_output artifact: %s", exc)
+            target_path.write_text(normalized + "\n", encoding="utf-8")
+        except OSError:
+            pass
  
     def _save_manifest(
         self,
@@ -252,8 +253,8 @@ class FinalizerEngine:
                 "citation_warning_summary": warning_summary,
             }
             self.problem_memory.save_manifest(payload)
-        except OSError as exc:
-            _logger.error("Failed to save manifest artifact: %s", exc)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # 公共终态入口
